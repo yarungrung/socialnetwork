@@ -7,3 +7,8 @@ fsspec
 kaleido
 imageio
 osmnx
+networkx
+scipy
+shapely
+matplotlib
+python-louvain
