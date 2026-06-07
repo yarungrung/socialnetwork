@@ -1,14 +1,17 @@
-streamlit
-pandas
+# 基礎資料處理與數學計算
 numpy
-geopandas
-localtileserver
-fsspec
-kaleido
-imageio
-osmnx
-networkx
+pandas
 scipy
+
+# 地理空間資料與圖資處理
 shapely
-matplotlib
+geopandas
+osmnx
+openpyxl
+
+# 網路分析與圖論
+networkx
 python-louvain
+
+# 繪圖視覺化（可選，若要在網頁顯示互動地圖，建議在 app.py 使用 streamlit 或 folium）
+matplotlib
