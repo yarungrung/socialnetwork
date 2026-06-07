@@ -6,3 +6,4 @@ localtileserver
 fsspec
 kaleido
 imageio
+osmnx
