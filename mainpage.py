@@ -655,3 +655,55 @@ def run_one_disaster_simulation(sim_id, rng):
 
 print("✅ 災害模擬函式準備完成。接著執行下一格，就會開始模擬自選災害點。")
 
+# 1. 先強迫卸載可能衝突的錯誤套件
+!pip uninstall -y community python-louvain
+
+# 2. 精準安裝含有 best_partition 的正確套件
+!pip install python-louvain
+
+import time
+
+print(f"【災害模擬啟動】開始執行 {N_SIMULATIONS} 次隨機道路失能模擬，每次影響半徑 {DISASTER_RADIUS} 公尺...")
+
+# 41 萬格 x 100 次若全部存成寬表會非常吃記憶體；這裡採用逐次加總，最後再除以次數。
+post_score_sum = pd.Series(0.0, index=gdf_grids["Grid_ID"].values)
+simulation_logs = []
+start_time = time.time()
+
+for sim_id in range(1, N_SIMULATIONS + 1):
+    sim_scores, sim_meta = run_one_disaster_simulation(sim_id, rng)
+    sim_series = sim_scores.set_index("Grid_ID")[POST_SCORE_FIELD].reindex(post_score_sum.index).fillna(0.0)
+    post_score_sum = post_score_sum.add(sim_series, fill_value=0.0)
+    simulation_logs.append(sim_meta)
+
+    if sim_id == 1 or sim_id % 10 == 0 or sim_id == N_SIMULATIONS:
+        elapsed = (time.time() - start_time) / 60
+        print(
+            f"   - 已完成 {sim_id:>3}/{N_SIMULATIONS} 次，"
+            f"本次失能道路 {sim_meta['失能道路邊數']} 條，"
+            f"災後生活圈 {sim_meta['災後生活圈數']} 個，"
+            f"累計耗時 {elapsed:.1f} 分鐘"
+        )
+
+print("【結果彙整】正在合併 100 次災後網格分數並計算平均...")
+df_post_avg = pd.DataFrame({
+    "Grid_ID": post_score_sum.index,
+    "災後100次平均分數": (post_score_sum.values / N_SIMULATIONS)
+})
+
+base_cols = gdf_grids_baseline[["Grid_ID", BASELINE_SCORE_FIELD, "geometry"]].copy()
+gdf_resilience_result = base_cols.merge(df_post_avg[["Grid_ID", "災後100次平均分數"]], on="Grid_ID", how="left")
+gdf_resilience_result["災後100次平均分數"] = gdf_resilience_result["災後100次平均分數"].fillna(0.0)
+gdf_resilience_result[FINAL_SCORE_FIELD] = (
+    gdf_resilience_result["災後100次平均分數"] - gdf_resilience_result[BASELINE_SCORE_FIELD]
+)
+gdf_resilience_result = gpd.GeoDataFrame(gdf_resilience_result, geometry="geometry", crs=gdf_grids.crs)
+df_simulation_log = pd.DataFrame(simulation_logs)
+
+print("\n🎉 【災害模擬完成】")
+print(f"   👉 已完成 {N_SIMULATIONS} 次隨機災害模擬。")
+print(f"   👉 變數 gdf_resilience_result 已包含 {FINAL_SCORE_FIELD}。")
+print("   👉 變數 df_simulation_log 已紀錄每次災害位置、失能道路數與生活圈數。")
+
+display(df_simulation_log.head())
+display(gdf_resilience_result[["Grid_ID", BASELINE_SCORE_FIELD, "災後100次平均分數", FINAL_SCORE_FIELD]].sort_values(by=FINAL_SCORE_FIELD).head(10))
