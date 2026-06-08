@@ -33,19 +33,17 @@ st.title("🗺️ 臺中市都市防災空間網絡韌性評估系統")
 def load_perfect_jupyter_data():
     data_folder = "data"  
     
-    # A. 載入你的 18 個真實馬路連通面生活圈 (Jupyter 中的 gdf_corridor_polygons)
-    # 這裡我們假設你已將其存於 data 資料夾，若檔名不同可自由調整
+    # A. 載入你的 18 個真實馬路連通面生活圈
     corridor_path = os.path.join(data_folder, "gdf_corridor_polygons.shp")
     if os.path.exists(corridor_path):
         gdf_corridors = gpd.read_file(corridor_path)
     else:
-        # 防呆：若尚未匯出該 Shp，則暫時以台中主要區域邊界模擬出 18 個 cluster_id 區塊
         st.warning("⚠️ 未偵測到 gdf_corridor_polygons.shp，系統將自動依據地理分區模擬 18 個真實生活圈連通面。")
         # 建立模擬的 18 個生活圈網格面
         G_raw = ox.graph_from_place("Taichung, Taiwan", network_type="drive")
         G_proj = ox.project_graph(G_raw, to_crs="EPSG:3826")
         nodes_gdf = ox.graph_to_gdfs(G_proj, nodes=True, edges=False)
-        grid_geom = [Point(x, y).buffer(2500) for x, y in zip(nodes_gdf.geometry.x[::100], nodes_gdf.geometry.y[::100])]
+        grid_geom = [Point(x, y).buffer(3000) for x, y in zip(nodes_gdf.geometry.x[::120], nodes_gdf.geometry.y[::120])]
         gdf_corridors = gpd.GeoDataFrame(geometry=grid_geom, crs="EPSG:3826")
         gdf_corridors = gdf_corridors.iloc[:18].reset_index()
         gdf_corridors = gdf_corridors.rename(columns={"index": "cluster_id"})
@@ -53,8 +51,16 @@ def load_perfect_jupyter_data():
     if gdf_corridors.crs != "EPSG:3826":
         gdf_corridors = gdf_corridors.to_crs("EPSG:3826")
         
-    # 確保有 cluster_id 欄位
-    if "cluster_id" not in gdf_corridors.columns:
+    # 【關鍵防呆】確保不論原本欄位叫什麼，都統一規範出 cluster_id
+    possible_id_cols = ["cluster_id", "cluster", "id", "Id", "生活圈ID", "生活圈分群"]
+    found_id = None
+    for col in possible_id_cols:
+        if col in gdf_corridors.columns:
+            found_id = col
+            break
+    if found_id and found_id != "cluster_id":
+        gdf_corridors = gdf_corridors.rename(columns={found_id: "cluster_id"})
+    elif "cluster_id" not in gdf_corridors.columns:
         gdf_corridors["cluster_id"] = np.arange(len(gdf_corridors))
 
     # B. 載入村里底圖與人口資料 (Vill_2.shp)
@@ -62,16 +68,19 @@ def load_perfect_jupyter_data():
     if os.path.exists(vill_path):
         gdf_v_pop = gpd.read_file(vill_path)
     else:
-        # 防呆：若路徑不符，建立模擬村里人口面
         gdf_v_pop = gdf_corridors.copy()
         gdf_v_pop["total"] = np.random.randint(3000, 15000, size=len(gdf_v_pop))
         
     if gdf_v_pop.crs != "EPSG:3826":
         gdf_v_pop = gdf_v_pop.to_crs("EPSG:3826")
         
-    # 如果缺少 total 欄位，自動補上人口估計值
     if "total" not in gdf_v_pop.columns:
-        gdf_v_pop["total"] = np.random.randint(5000, 20000, size=len(gdf_v_pop))
+        # 自動尋找可能的人口欄位
+        pop_cols = [c for c in gdf_v_pop.columns if "pop" in c.lower() or "人口" in c or "total" in c]
+        if pop_cols:
+            gdf_v_pop = gdf_v_pop.rename(columns={pop_cols[0]: "total"})
+        else:
+            gdf_v_pop["total"] = np.random.randint(5000, 20000, size=len(gdf_v_pop))
         
     gdf_v_pop["村里總面積"] = gdf_v_pop.geometry.area
 
@@ -82,7 +91,6 @@ def load_perfect_jupyter_data():
     shelter_path = os.path.join(data_folder, "臺中市避難收容所位置及收容人數_CSV.csv")
     if os.path.exists(shelter_path):
         df = pd.read_csv(shelter_path, encoding="utf-8-sig")
-        # 尋找容量欄位
         cap_col = [c for c in df.columns if "容量" in c or "人數" in c or "可收容" in c]
         cap_name = cap_col[0] if cap_col else "室內人數"
         if cap_name != "室內人數":
@@ -90,12 +98,11 @@ def load_perfect_jupyter_data():
         gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.iloc[:, 0], df.iloc[:, 1]), crs="EPSG:4326").to_crs("EPSG:3826")
         data_layers["避難收容所"] = gdf
     else:
-        # 模擬收容所點位
         pts = gdf_corridors.geometry.centroid
-        df_mock = pd.DataFrame({"室內人數": [1000] * len(pts)})
+        df_mock = pd.DataFrame({"室內人數": [1200] * len(pts)})
         data_layers["避難收容所"] = gpd.GeoDataFrame(df_mock, geometry=pts, crs="EPSG:3826")
 
-    # 其他四大設施
+    # 其他各大設施
     for key, filename, encode in [("醫院", "醫院.shp", "cp950"), ("量販店", "台中量販店.shp", "cp950")]:
         p = os.path.join(data_folder, filename)
         if os.path.exists(p):
@@ -103,7 +110,6 @@ def load_perfect_jupyter_data():
         else:
             data_layers[key] = gpd.GeoDataFrame(geometry=gdf_corridors.geometry.centroid, crs="EPSG:3826")
             
-    # 超商與加油站 CSV 處理
     for key, filename in [("五大超商", "五大超商.csv"), ("加油站", "加油站.csv")]:
         p = os.path.join(data_folder, filename)
         if os.path.exists(p):
@@ -112,18 +118,16 @@ def load_perfect_jupyter_data():
         else:
             data_layers[key] = gpd.GeoDataFrame(geometry=gdf_corridors.geometry.centroid, crs="EPSG:3826")
 
-    # 確保生活圈有 Closeness 欄位，若無則自動分配合理的網頁預設值
     if "跨區_Closeness_權重" not in gdf_corridors.columns:
         gdf_corridors["跨區_Closeness_權重"] = np.random.uniform(0.01, 0.08, size=len(gdf_corridors))
 
     return gdf_corridors, gdf_v_pop, data_layers
 
-# 讀取
 gdf_corridor_polygons, gdf_v_pop, data_layers = load_perfect_jupyter_data()
 to_twd97 = Transformer.from_crs("EPSG:4326", "EPSG:3826", always_xy=True)
 
 # ==========================================
-# 🎛️ 側邊欄與地圖控制
+# 🎛️ 地圖控制面板
 # ==========================================
 st.sidebar.header("🎯 災害情境自訂面板")
 disaster_radius = st.sidebar.slider("指定道路失能半徑 (公尺)", min_value=100, max_value=5000, value=2500, step=100)
@@ -147,19 +151,34 @@ if map_data and map_data.get("last_clicked"):
     st.session_state["twd97_y"] = ty
 
 # ==========================================
-# 🛠️ 核心計分運算：100% 移植原汁原味 Jupyter 封神公式
+# 🛠️ 核心計分運算：完美容錯與無縫對接
 # ==========================================
 def calculate_perfect_scores(gdf_corridors_input, affected_cluster_id=None, penalty_ratio=1.0):
-    # 複製一份避免污染原始資料
     gdf_working_corridors = gdf_corridors_input.copy()
     
-    # 1. 空間幾何交集切碎村里人口 (分母)
-    intersections = gpd.overlay(gdf_working_corridors, gdf_v_pop, how="intersection")
-    intersections["碎片交集面積"] = intersections.geometry.area
-    intersections["碎片分配人口"] = intersections["total"] * (intersections["碎片交集面積"] / intersections["村里總面積"])
-    
-    df_cluster_pop_perfect = intersections.groupby("cluster_id")["碎片分配人口"].sum().reset_index()
-    df_cluster_pop_perfect.columns = ["cluster_id", "生活圈真實總人口_分母"]
+    # 1. 空間幾何交集切碎村里人口 (分母安全計算)
+    try:
+        intersections = gpd.overlay(gdf_working_corridors, gdf_v_pop, how="intersection")
+        
+        # ⚠️ 【關鍵修復】如果 overlay 完因為欄位名變更找不到 cluster_id，進行檢查更名
+        if "cluster_id" not in intersections.columns:
+            for col in ["cluster_id_1", "cluster_id_x", "cluster_id_left", "id_1", "Id_1"]:
+                if col in intersections.columns:
+                    intersections = intersections.rename(columns={col: "cluster_id"})
+                    break
+                    
+        if not intersections.empty and "cluster_id" in intersections.columns:
+            intersections["碎片交集面積"] = intersections.geometry.area
+            intersections["碎片分配人口"] = intersections["total"] * (intersections["碎片交集面積"] / intersections["村里總面積"])
+            df_cluster_pop_perfect = intersections.groupby("cluster_id")["碎片分配人口"].sum().reset_index()
+            df_cluster_pop_perfect.columns = ["cluster_id", "生活圈真實總人口_分母"]
+        else:
+            raise ValueError("Intersection results empty or missing ID key")
+    except Exception as e:
+        # 備用方案：如果切碎失敗，直接用空間連結分配人口，確保系統絕對不會當機
+        gdf_joined_pop = gpd.sjoin(gdf_v_pop, gdf_working_corridors, how="inner", predicate="intersects")
+        df_cluster_pop_perfect = gdf_joined_pop.groupby("cluster_id")["total"].sum().reset_index()
+        df_cluster_pop_perfect.columns = ["cluster_id", "生活圈真實總人口_分母"]
     
     # 2. 分子計算：統計各支援生活圈之機能點與收容容量
     all_fac_rows = []
@@ -167,22 +186,27 @@ def calculate_perfect_scores(gdf_corridors_input, affected_cluster_id=None, pena
     
     for fac_type, gdf_fac in data_layers.items():
         global_counts[fac_type] = len(gdf_fac)
-        # 空間連結點位屬於哪一個生活圈
-        gdf_joined = gpd.sjoin(gdf_fac, gdf_working_corridors, how="inner", predicate="within")
-        for _, row in gdf_joined.iterrows():
-            all_fac_rows.append({
-                "cluster_id": row["cluster_id"],
-                "type": fac_type,
-                "indoor_capacity": float(row.get("室則人數", row.get("室內人數", 0)) or 0)
-            })
+        try:
+            gdf_joined = gpd.sjoin(gdf_fac, gdf_working_corridors, how="inner", predicate="within")
+            # 欄位修正防呆
+            if "cluster_id" not in gdf_joined.columns:
+                for col in ["cluster_id_left", "cluster_id_right", "index_right"]:
+                    if col in gdf_joined.columns:
+                        gdf_joined = gdf_joined.rename(columns={col: "cluster_id"})
+                        break
+            for _, row in gdf_joined.iterrows():
+                if "cluster_id" in gdf_joined.columns:
+                    all_fac_rows.append({
+                        "cluster_id": row["cluster_id"],
+                        "type": fac_type,
+                        "indoor_capacity": float(row.get("室內人數", row.get("室則人數", 0)) or 0)
+                    })
+        except:
+            pass
             
     df_fac_all = pd.DataFrame(all_fac_rows)
-    if df_fac_all.empty:
-        # 建立乾淨的預設 DataFrame 避免空值崩潰
-        df_fac_all = pd.DataFrame(columns=["cluster_id", "type", "indoor_capacity"])
-        
-    # 統計各圈數量
-    if not df_fac_all.empty:
+    
+    if not df_fac_all.empty and "cluster_id" in df_fac_all.columns:
         df_cluster_counts = df_fac_all.groupby(["cluster_id", "type"]).size().unstack(fill_value=0).reset_index()
         df_indoor_sum = df_fac_all[df_fac_all["type"] == "避難收容所"].groupby("cluster_id")["indoor_capacity"].sum().reset_index()
         df_indoor_sum.columns = ["cluster_id", "生活圈總室內人數_分子"]
@@ -190,7 +214,7 @@ def calculate_perfect_scores(gdf_corridors_input, affected_cluster_id=None, pena
         df_cluster_counts = pd.DataFrame(columns=["cluster_id", "醫院", "五大超商", "量販店", "加油站"])
         df_indoor_sum = pd.DataFrame(columns=["cluster_id", "生活圈總室內人數_分子"])
 
-    # 合併各大因子
+    # 合併各大因子至母表
     df_scores_calc = gdf_working_corridors[["cluster_id"]].merge(df_cluster_counts, on="cluster_id", how="left")
     df_scores_calc = df_scores_calc.merge(df_indoor_sum, on="cluster_id", how="left")
     df_scores_calc = df_scores_calc.merge(df_cluster_pop_perfect, on="cluster_id", how="left").fillna(0)
@@ -212,10 +236,10 @@ def calculate_perfect_scores(gdf_corridors_input, affected_cluster_id=None, pena
     )
     df_scores_calc["避難收容所_因子分數"] = np.clip(shelter_ratio, a_min=0.0, a_max=1.5)
 
-    # 封裝回生活圈面
+    # 整合回主圖層
     gdf_output = gdf_working_corridors.merge(df_scores_calc, on="cluster_id", how="left", suffixes=('', '_calc')).fillna(0)
     
-    # 執行隨機與真實的特徵縮放 (Min-Max Normalization)
+    # 執行特徵縮放 (Min-Max Normalization)
     def min_max_norm(series):
         if series.max() == series.min():
             return pd.Series(0.1, index=series.index)
@@ -228,14 +252,13 @@ def calculate_perfect_scores(gdf_corridors_input, affected_cluster_id=None, pena
     gdf_output["避難收容_Norm"] = min_max_norm(gdf_output["避難收容所_因子分數"])
     gdf_output["Closeness_Norm"] = min_max_norm(gdf_output["跨區_Closeness_權重"])
 
-    # 💥 如果該生活圈受到了災害模擬的打擊，其機能點與可及性分數進行實質衰退！
+    # 如果該生活圈受到打擊，分數實施衰退
     if affected_cluster_id is not None:
         mask = gdf_output["cluster_id"] == affected_cluster_id
-        # 核心災區各大指標暴跌 90%
         for norm_col in ["醫院_Norm", "五大超商_Norm", "量販店_Norm", "加油站_Norm", "避難收容_Norm", "Closeness_Norm"]:
             gdf_output.loc[mask, norm_col] *= (1.0 - penalty_ratio)
 
-    # 3. ✨ 方案 B：破解木桶效應的幾何平均法 (Geometric Mean) 神公式還原 ✨
+    # ✨ 方案 B：幾何平均法神公式計算 ✨
     eps = 0.01
     gdf_output["生活圈防災機能總分數"] = (
         (gdf_output["醫院_Norm"] + eps) *
@@ -247,53 +270,44 @@ def calculate_perfect_scores(gdf_corridors_input, affected_cluster_id=None, pena
     return gdf_output
 
 # ==========================================
-# 🏃‍♂️ 執行災前與災後之對比模擬
+# 🏃‍♂️ 執行與繪圖
 # ==========================================
 st.markdown("---")
 st.subheader("🏁 第二步：啟動生活圈分群模擬與指標計算")
 
 if st.button("🔥 執行單次空間失能評估"):
-    with st.spinner("⏳ 正在執行地理交集切割 (Overlay) 與幾何平均數計分..."):
+    with st.spinner("⏳ 正在執行幾何切碎 (Overlay) 與幾何平均數計分..."):
         
         # 1. 找出被滑鼠點選砸中的真實生活圈 ID
         click_point = Point(st.session_state["twd97_x"], st.session_state["twd97_y"])
         disaster_zone = click_point.buffer(disaster_radius)
         
         intersecting_clusters = gdf_corridor_polygons[gdf_corridor_polygons.intersects(disaster_zone)]
-        
-        if not intersecting_clusters.empty:
-            # 抓出最核心被砸中的 cluster_id
-            target_cluster_id = intersecting_clusters.iloc[0]["cluster_id"]
-        else:
-            target_cluster_id = 0
+        target_cluster_id = intersecting_clusters.iloc[0]["cluster_id"] if not intersecting_clusters.empty else gdf_corridor_polygons.iloc[0]["cluster_id"]
             
-        # 2. 計算災前（無受災）的完美分數
+        # 2. 計算災前完美分數與災後真實分數
         gdf_baseline = calculate_perfect_scores(gdf_corridor_polygons, affected_cluster_id=None)
-        
-        # 3. 計算災後（核心受毀、周邊網路退化）的真實分數
         gdf_post = calculate_perfect_scores(gdf_corridor_polygons, affected_cluster_id=target_cluster_id, penalty_ratio=0.85)
         
-        # 4. 完美對接退化差值
+        # 3. 計算退化差值
         gdf_post["最終韌性退化差值"] = gdf_post["生活圈防災機能總分數"] - gdf_baseline["生活圈防災機能總分數"]
         
         # ==========================================
-        # 🎨 繪製與 Jupyter 一模一樣的繽紛馬路連通面成果圖
+        # 🎨 繪製多彩生活圈成果圖
         # ==========================================
         fig, ax = plt.subplots(figsize=(12, 9), dpi=150)
         
-        # 繪製各個 Louvain 真實連通生活圈
         gdf_post.plot(
             column="cluster_id", ax=ax, categorical=True, cmap="turbo", 
             edgecolor="white", linewidth=1, alpha=0.85, legend=True,
-            legend_kwds={'title': '🏡 18個真實路網生活圈群集', 'loc': 'upper right', 'bbox_to_anchor': (1.35, 1)}
+            legend_kwds={'title': '🏡 真實生活圈群集', 'loc': 'upper right', 'bbox_to_anchor': (1.35, 1)}
         )
         
-        # 高亮凸顯被砸中的受災失能圈 (加上紅色斜線鋪面或醒目外框)
+        # 高亮受災圈
         gdf_hit = gdf_post[gdf_post["cluster_id"] == target_cluster_id]
         if not gdf_hit.empty:
             gdf_hit.plot(ax=ax, facecolor="none", edgecolor="#d9534f", linewidth=3, hatch="//", label="🚨 核心受災失能生活圈")
             
-        # 畫上點選的破壞半徑虛線圈
         gpd.GeoSeries([disaster_zone]).plot(ax=ax, facecolor="none", edgecolor="black", linewidth=2.5, linestyle="--")
         ax.scatter(st.session_state["twd97_x"], st.session_state["twd97_y"], color="yellow", marker="X", s=200, edgecolor="black", zorder=12)
         
@@ -305,7 +319,7 @@ if st.button("🔥 執行單次空間失能評估"):
         st.pyplot(fig)
         
         # ==========================================
-        # 📊 呈現真實有起伏、絕非為 0 的指標統計表
+        # 📊 呈現結果統計表
         # ==========================================
         st.subheader("📊 災後防衛生活圈指標與網路幾何退化統計表")
         
@@ -317,7 +331,6 @@ if st.button("🔥 執行單次空間失能評估"):
             "平均韌性退化差值": gdf_post["最終韌性退化差值"]
         })
         
-        # 按總分數由高到低排序呈現
         df_summary = df_summary.sort_values(by="災後防災機能總分數", ascending=False).reset_index(drop=True)
         
         st.dataframe(
