@@ -1,3 +1,4 @@
+
 import os
 import streamlit as st
 import folium
@@ -188,7 +189,7 @@ def calculate_disaster_resilience_degradation(
     disaster_point,
     radius: float,
     eps: float = 0.01
-) -> pd.DataFrame:
+)    pd.DataFrame:
     """
     計算每個網格分配的 Louvain 群 ID、災前幾何平均分數，
     並依據災害擴散半徑計算災後降解值與最終韌性差值。
