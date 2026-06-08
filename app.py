@@ -195,7 +195,7 @@ if map_data and map_data.get("last_clicked"):
 st.info(f"🎯 **當前選定點** ➔ 緯度: {st.session_state['last_clicked_wgs84'][0]:.5f}, 經度: {st.session_state['last_clicked_wgs84'][1]:.5f} | **TWD97 座標** ➔ X: {st.session_state['twd97_x']:.1f}, Y: {st.session_state['twd97_y']:.1f}")
 
 # ==========================================
-# 🛠️ 核心運算演算法 (100% 還原 Jupyter 色塊圖邏輯)
+# 🛠️ 核心運算演算法
 # ==========================================
 def run_single_disaster_simulation(cx, cy, radius):
     G_cracked = G_undirected.copy()
@@ -270,7 +270,7 @@ def run_single_disaster_simulation(cx, cy, radius):
         geom_mean_base = (s1_b * s2_b * s3_b * s4_b) ** 0.25
         baseline_scores.append(geom_mean_base)
         
-        # 【關鍵還原】如果網格中心點落在災害半徑內，直接標記為 -1 (受災核心失能區)
+        # 如果網格中心點落在災害半徑內，直接標記為 -1 (受災核心失能區)
         if centroid.within(disaster_zone):
             s1_p, s2_p, s3_p, s4_p = s1_b * 0.10, s2_b * 0.15, s3_b * 0.02, s4_b * 0.25
             cluster_id = -1 
@@ -296,7 +296,7 @@ def run_single_disaster_simulation(cx, cy, radius):
         "災後_防災韌性(幾何平均)": post_scores,
         "生活圈分群ID": assigned_clusters
     })
-    df_bind["最終韌性退化差值"] = df_bind["災後_防災韌性(幾何平均)"] - df_bind["災前_防災韌性(幾何平均)"]
+    df_bind["最終韌性退化差值"] = df_bind["災後_防災韌性(幾何平均)"] - df_bind["災前_防災韌性(幾幾何平均)"] if "災前_防災韌性(幾幾何平均)" in df_bind else df_bind["災後_防災韌性(幾何平均)"] - df_bind["災前_防災韌性(幾何平均)"]
     return df_bind
 
 # ==========================================
@@ -337,7 +337,7 @@ if st.button("🔥 執行單次空間失能評估"):
                 legend_kwds={'title': '防衛生活圈群集', 'loc': 'upper right', 'bbox_to_anchor': (1.28, 1)}
             )
             
-        # 4. 【高光還原圖二】將災害中心範圍內的網格全部塗成醒目的紅色！
+        # 4. 將災害中心範圍內的網格全部塗成醒目的紅色！
         gdf_hit = gdf_res_map[gdf_res_map["生活圈分群ID"] == -1]
         if not gdf_hit.empty:
             gdf_hit.plot(ax=ax, color="#d9534f", edgecolor="none", alpha=0.9, label="災害核心失能區")
@@ -356,12 +356,16 @@ if st.button("🔥 執行單次空間失能評估"):
         
         st.pyplot(fig)
         
-        # 顯示統計數據表
+        # ==========================================
+        # 📊 修正後的統計表格計算區 (確保無打錯字)
+        # ==========================================
         st.subheader("📊 災後防衛生活圈指標統計表")
+        
+        # 嚴謹指定正確的欄位名稱
         df_summary = df_result.groupby("生活圈分群ID").agg(
             包含網格數=("Grid_ID", "count"),
             災前平均韌性=("災前_防災韌性(幾何平均)", "mean"),
-            災後平均韌性=("災後_防災韌性(幾幾何平均)", "mean") if "災後_防災韌性(幾何平均)" in df_result else ("災後_防災韌性(幾何平均)", "mean"),
+            災後平均韌性=("災後_防災韌性(幾何平均)", "mean"),
             韌性退化差值=("最終韌性退化差值", "mean")
         ).reset_index()
         
