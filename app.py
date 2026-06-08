@@ -8,27 +8,14 @@ import pandas as pd
 from scipy.spatial import cKDTree
 from shapely.geometry import Polygon
 
-# 1. 初始化網頁基本配置
+# 1. 初始化網頁基本配置 (必須是 Streamlit 的第一個指令)
 st.set_page_config(
     page_title="臺中市都市防災空間網絡韌性評估系統", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-st.title("🚀 歡迎使用臺中市都市防災空間網絡韌性評估系統")
-st.markdown("""
-本系統整合了 **OSM 道路拓樸網絡**、**都市防災害機能點位空間對接** 以及 **Louvain 社群分群演算法**，
-能即時評估特定災害空間失能事件對生活圈的韌性衝擊。
-
-### 📁 系統初始化與快取檢測
-請確保您的專案目錄中包含一個 `data` 資料夾，並放入以下圖資：
-- `臺中市避難收容所位置及收容人數_CSV.csv`
-- `台中量販店.shp` (含相關 shp 附檔)
-- `醫院.shp` (含相關 shp 附檔)
-- `加油站.csv`
-""")
-
-# 2. 建立資料快取函式 (完美收納同學的 Cell 1 ~ Cell 5 邏輯)
+# 2. 建立資料快取功能 (從真實圖資中加載)
 @st.cache_data(show_spinner=False)
 def load_and_process_base_data():
     data_folder = "data" # 對齊 GitHub 相對路徑
@@ -58,7 +45,7 @@ def load_and_process_base_data():
     shelter_path = os.path.join(data_folder, "臺中市避難收容所位置及收容人數_CSV.csv")
     if os.path.exists(shelter_path):
         df = pd.read_csv(shelter_path, encoding="utf-8-sig")
-        gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.iloc[:, 0], df.iloc[:, 1])) # 簡化欄位搜尋
+        gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.iloc[:, 0], df.iloc[:, 1]))
         data_layers["shelter"] = clean_and_project(gdf)
         
     # 醫院
@@ -89,7 +76,7 @@ def load_and_process_base_data():
         fac_coords = np.array([[geom.x, geom.y] for geom in gdf_fac.geometry])
         distances, indices = road_tree.query(fac_coords)
         for idx, (dist, node_idx) in enumerate(zip(distances, indices)):
-            if dist <= 100.0: # 100米對接限制
+            if dist <= 100.0:
                 target_node = node_ids[node_idx]
                 if target_node not in road_node_to_facilities:
                     road_node_to_facilities[target_node] = []
@@ -98,7 +85,7 @@ def load_and_process_base_data():
                     "data_row": gdf_fac.iloc[idx].to_dict()
                 })
 
-    # (D) 動態生成均勻空間網格 (展示測試先用 200，交報告可改為 100 或 10)
+    # (D) 生成均勻空間網格 (展示先用 200，交報告可改 100)
     GRID_SIZE = 200 
     node_xs, node_ys = node_coords[:, 0], node_coords[:, 1]
     x_coords = np.arange(min(node_xs), max(node_xs), GRID_SIZE)
@@ -112,9 +99,9 @@ def load_and_process_base_data():
     
     return G_proj, G_undirected, road_node_to_facilities, gdf_grids
 
-# 執行快取載入並存入 Session State
+# 執行快取並存入共用記憶體
 if "initialized" not in st.session_state:
-    with st.spinner("⏳ 正在下載臺中市路網並動態生成網格、對接機能點位（初次載入需 1-2 分鐘）..."):
+    with st.spinner("⏳ 正在下載臺中市路網、對接機能點位（初次載入需 1-2 分鐘）..."):
         G_proj, G_undirected, road_node_to_facilities, gdf_grids = load_and_process_base_data()
         st.session_state["G_proj"] = G_proj
         st.session_state["G_undirected"] = G_undirected
@@ -122,4 +109,24 @@ if "initialized" not in st.session_state:
         st.session_state["gdf_grids"] = gdf_grids
         st.session_state["initialized"] = True
 
-st.success("✅ 臺中市基礎機能底圖與空間對接資料載入成功！請點擊左側邊欄的 **mainpage** 開始進行模擬。")
+# 3. 🗺️ 關鍵核心：在側邊欄最上方製作自訂選單切換
+st.sidebar.title(" NAVIGATION 導覽選單")
+page = st.sidebar.radio("請選擇要檢視的頁面：", ["🏠 系統首頁說明", "📊 災害模擬主程式"])
+
+# 依據選單內容，直接把對應的程式碼渲染出來
+if page == "🏠 系統首頁說明":
+    st.title("🗺️ 臺中市都市防災空間網絡韌性評估系統")
+    st.markdown("""
+    本系統整合了 **OSM 道路拓樸網絡**、**都市防災害機能點位空間對接** 以及 **Louvain 社群分群演算法**。
+    
+    ### 💡 快速開始指南：
+    1. 請點選左側邊欄選單切換至 **[📊 災害模擬主程式]**。
+    2. 切換後，左側將會跳出完整的「半徑調整拉桿」與「執行按鈕」。
+    3. 您可以直接在右側出現的臺中市地圖上任意點選，即可立刻進行單次幾何平均數防災模擬！
+    """)
+    st.success("✅ 系統環境與真實圖資已成功就位！請由左側切換至模擬主程式。")
+
+elif page == "📊 災害模擬主程式":
+    # 直接在 app.py 裡呼叫同層級的 mainpage.py 內容
+    import mainpage
+    mainpage.show_simulation_page()
