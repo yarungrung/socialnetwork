@@ -180,7 +180,8 @@ def run_louvain_network_simulation(cx, cy, radius):
         # 備用連通群聚劃分
         fac_to_cluster = {i: (i % 8) for i in range(len(fac_coords_arr))}
 
-    def calculate_disaster_resilience_degradation(
+
+def calculate_disaster_resilience_degradation(
     gdf_grids: gpd.GeoDataFrame,
     gdf_corridor_polygons: gpd.GeoDataFrame,
     df_scores_calc: pd.DataFrame,
