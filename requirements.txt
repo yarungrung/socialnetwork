@@ -1,17 +1,12 @@
-# 基礎資料處理與數學計算
-numpy
-pandas
-scipy
-
-# 地理空間資料與圖資處理
-shapely
-geopandas
-osmnx
-openpyxl
-
-# 網路分析與圖論
-networkx
-python-louvain
-
-# 繪圖視覺化（可選，若要在網頁顯示互動地圖，建議在 app.py 使用 streamlit 或 folium）
-matplotlib
+streamlit>=1.30.0
+streamlit-folium>=0.16.0
+folium>=0.15.0
+geopandas>=0.14.0
+osmnx>=1.9.0
+networkx>=3.0
+pandas>=2.0
+numpy>=1.24.0
+scipy>=1.10.0
+python-louvain>=0.16
+shapely>=2.0
+pyproj>=3.5.0
