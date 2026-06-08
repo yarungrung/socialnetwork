@@ -93,7 +93,7 @@ def load_perfect_jupyter_data():
             count += 1
     gdf_grids_raw = gpd.GeoDataFrame({"Grid_ID": grid_ids}, geometry=grid_geoms, crs="EPSG:3826")
     
-    # 【完美修正】安全執行空間交叉篩選，移除錯誤尾綴
+    # 安全執行空間交叉篩選，移除非預期欄位
     gdf_grids = gpd.sjoin(gdf_grids_raw, gdf_corridors[["geometry"]], how="inner", predicate="intersects")
     if "index_right" in gdf_grids.columns:
         gdf_grids = gdf_grids.drop(columns=["index_right"])
@@ -289,19 +289,31 @@ if st.button("🔥 執行單次空間失能評估"):
         gdf_baseline_res = calculate_perfect_scores(gdf_corridor_polygons, affected_cluster_id=None)
         gdf_post_res = calculate_perfect_scores(gdf_corridor_polygons, affected_cluster_id=target_cluster_id, penalty_ratio=0.85)
         
-        # 網格中心點繼承生活圈分數
+        # 轉成中心點進行 sjoin 判別屬於哪一個 Louvain 生活圈
         grid_centroids = gdf_grids.copy()
         grid_centroids["geometry"] = grid_centroids.geometry.centroid
         
-        grid_joined_base = gpd.sjoin(grid_centroids, gdf_baseline_res[["cluster_id", "生活圈防災機能總分數", "生活圈真實總人口_分母"]], how="left", predicate="within")
-        grid_joined_post = gpd.sjoin(grid_centroids, gdf_post_res[["cluster_id", "生活圈防災機能總分數"]], how="left", predicate="within")
+        # 【關鍵修復核心】切片時務必強行塞入 "geometry" 欄位，確保它維持 GeoDataFrame 身份，不再噴發 ValueError！
+        grid_joined_base = gpd.sjoin(
+            grid_centroids, 
+            gdf_baseline_res[["cluster_id", "生活圈防災機能總分數", "生活圈真實總人口_分母", "geometry"]], 
+            how="left", 
+            predicate="within"
+        )
+        grid_joined_post = gpd.sjoin(
+            grid_centroids, 
+            gdf_post_res[["cluster_id", "生活圈防災機能總分數", "geometry"]], 
+            how="left", 
+            predicate="within"
+        )
         
+        # 將對接數據貼回實體網格面 (gdf_grids)
         gdf_final_grids = gdf_grids.copy()
         gdf_final_grids["生活圈分群ID"] = grid_joined_base["cluster_id"].fillna(-1).astype(int)
         gdf_final_grids["生活圈真實總人口_分母"] = grid_joined_base["生活圈真實總人口_分母"].fillna(0)
         gdf_final_grids["災前_防災韌性(幾何平均)"] = grid_joined_base["生活圈防災機能總分數"].fillna(0)
-        gdf_final_grids["災後_防災韌性(幾微平均)"] = grid_joined_post["生活圈防災機能總分數"].fillna(0)
-        gdf_final_grids["最終韌性退化差值"] = gdf_final_grids["災後_防災韌性(幾微平均)"] - gdf_final_grids["災前_防災韌性(幾何平均)"]
+        gdf_final_grids["災後_防災韌性(幾何平均)"] = grid_joined_post["生活圈防災機能總分數"].fillna(0)
+        gdf_final_grids["最終韌性退化差值"] = gdf_final_grids["災後_防災韌性(幾何平均)"] - gdf_final_grids["災前_防災韌性(幾何平均)"]
         
         # ==========================================
         # 🎨 繪製多彩地理對位分色分群成果圖
@@ -344,12 +356,12 @@ if st.button("🔥 執行單次空間失能評估"):
             "Grid_ID": "count",
             "生活圈真實總人口_分母": "first",
             "災前_防災韌性(幾何平均)": "first",
-            "災後_防災韌性(幾微平均)": "first",
+            "災後_防災韌性(幾何平均)": "first",
             "最終韌性退化差值": "first"
         }).reset_index()
         
         df_summary["防衛生活圈名稱"] = [f"🏡 真實生活圈 {int(cid)}" if cid != target_cluster_id else f"🚨 真實生活圈 {int(cid)} (受災核心)" for cid in df_summary["生活圈分群ID"]]
-        df_summary = df_summary.rename(columns={"Grid_ID": "涵蓋空間網格數", "生活圈真實總人口_分母": "精算真實總人口", "災後_防災韌性(幾微平均)": "災後_防災韌性(幾何平均)"})
+        df_summary = df_summary.rename(columns={"Grid_ID": "涵蓋空間網格數", "生活圈真實總人口_分母": "精算真實總人口"})
         
         df_summary = df_summary[df_summary["生活圈分群ID"] != -1].sort_values(by="災前_防災韌性(幾何平均)", ascending=False).reset_index(drop=True)
         
