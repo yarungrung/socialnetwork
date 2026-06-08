@@ -141,18 +141,29 @@ to_twd97 = Transformer.from_crs("EPSG:4326", "EPSG:3826", always_xy=True)
 st.sidebar.header("🎯 災害情境自訂面板")
 disaster_radius = st.sidebar.slider("指定道路失能半徑 (公尺)", min_value=100, max_value=5000, value=2000, step=100)
 
-# 初始化點擊座標（預設台中市中心）
+# 初始化點擊座標（預設台中市中心：市政府附近）
 if "last_clicked_wgs84" not in st.session_state:
     st.session_state["last_clicked_wgs84"] = (24.1624, 120.6405)
     st.session_state["twd97_x"] = 217432
     st.session_state["twd97_y"] = 2672145
 
 # ==========================================
-# 🗺️ 主頁面互動點選地圖
+# 🗺️ 主頁面互動點選地圖 (咻一下鎖定台中市邊界)
 # ==========================================
 st.subheader("📍 請在下方地圖上點選「災害中心點位置」")
 
-m = folium.Map(location=st.session_state["last_clicked_wgs84"], zoom_start=12)
+# 【核心進化：設定台中市的包絡線緯經度邊界】
+# [南西角(底, 左), 北東角(頂, 右)] ➔ 精準框住大台中生活圈
+taichung_bounds = [[24.00, 120.45], [24.40, 121.45]]
+
+m = folium.Map(
+    location=st.session_state["last_clicked_wgs84"], 
+    zoom_start=11,                # 初始縮放，剛好完美呈現大台中
+    min_zoom=10,                  # 限制不准縮太小，避免滑出台灣
+    max_bounds=True,              # 啟動邊界硬性鎖定機制！
+    max_bounds_viscosity=1.0,     # 黏滯係數 1.0 代表「完全拉不出去」，拉走會一瞬間彈回來
+    bounds=taichung_bounds        # 套用台中邊界
+)
 
 folium.Marker(
     location=st.session_state["last_clicked_wgs84"],
@@ -169,16 +180,21 @@ folium.Circle(
     fill_opacity=0.2,
 ).add_to(m)
 
-# 頂部點選用的地圖我們保持乾淨、小巧，不放幾千個網格，絕對不閃退
-map_data = st_folium(m, width="100%", height=350, key="taichung_flat_map")
+# 渲染點選用的頂部地圖
+map_data = st_folium(m, width="100%", height=380, key="taichung_flat_map")
 
 if map_data and map_data.get("last_clicked"):
     clicked = map_data["last_clicked"]
     lng, lat = clicked["lng"], clicked["lat"]
-    st.session_state["last_clicked_wgs84"] = (lat, lng)
-    tx, ty = to_twd97.transform(lng, lat)
-    st.session_state["twd97_x"] = tx
-    st.session_state["twd97_y"] = ty
+    
+    # 再次做多重防護保護機制：檢查使用者點擊是否在台中合理的經緯度區間之內
+    if (24.00 <= lat <= 24.40) and (120.45 <= lng <= 121.45):
+        st.session_state["last_clicked_wgs84"] = (lat, lng)
+        tx, ty = to_twd97.transform(lng, lat)
+        st.session_state["twd97_x"] = tx
+        st.session_state["twd97_y"] = ty
+    else:
+        st.sidebar.warning("⚠️ 點選位置超出台中市核心評估範圍，系統已為您自動擋下。")
 
 st.info(f"🎯 **當前選定點** ➔ 緯度(Lat): {st.session_state['last_clicked_wgs84'][0]:.5f}, 經度(Lng): {st.session_state['last_clicked_wgs84'][1]:.5f} | **TWD97 投影座標** ➔ X: {st.session_state['twd97_x']:.1f}, Y: {st.session_state['twd97_y']:.1f}")
 
@@ -243,7 +259,7 @@ def run_single_disaster_simulation(cx, cy, radius):
                         G_fac_net.add_edge(u, v, weight=float(dist))
                         edges_seen.add((u, v))
 
-    # 3. 執行連通元件群集作為生活圈標籤 (100% 穩定無缺漏)
+    # 3. 執行連通元件群集作為生活圈標籤
     components = list(nx.connected_components(G_fac_net))
     post_partition = {}
     for comp_idx, comp in enumerate(components):
@@ -304,7 +320,7 @@ st.markdown("---")
 st.subheader("🏁 第二步：啟動生活圈分群模擬與指標計算")
 
 if st.button("🔥 執行單次空間失能評估"):
-    with st.spinner(f"⏳ 正在進行生活圈拓樸分析並渲染報告地圖（此步驟採用靜態安全模式，絕對不閃退）..."):
+    with st.spinner(f"⏳ 正在進行生活圈拓樸分析並渲染報告地圖..."):
         
         df_result = run_single_disaster_simulation(
             st.session_state["twd97_x"], 
@@ -339,21 +355,18 @@ if st.button("🔥 執行單次空間失能評估"):
         # ------------------------------------------
         # 🖼️ 繪製完全防崩潰的 Matplotlib 分群彩圖
         # ------------------------------------------
-        st.subheader("🖼️ 全臺中市災後生活圈網絡分群彩圖 (Matplotlib 高清安全模式)")
-        st.caption("💡 提示：本圖由伺服器後端預先渲染為高畫質點陣圖，百分之百不會引發瀏覽器閃退。您可以直接按滑鼠右鍵「另存圖片」用於期末報告中。")
+        st.subheader("🖼️ 全臺中市災後生活圈網絡分群彩圖")
         
-        # 合併回地圖
         gdf_res_map = gdf_grids.merge(df_result, on="Grid_ID")
         
-        # 開啟 matplotlib 畫布
         fig, ax = plt.subplots(figsize=(10, 8), dpi=150)
         
-        # 1. 畫出未分群的網絡孤立區 (用淺灰色或淡淡的紅色當底)
+        # 1. 畫出未分群的網絡孤立區
         gdf_isolated = gdf_res_map[gdf_res_map["生活圈分群ID"] == -1]
         if not gdf_isolated.empty:
             gdf_isolated.plot(ax=ax, color="#e0e0e0", edgecolor="none", label="網絡孤立點")
             
-        # 2. 畫出成功分群的生活圈 (用彩色調色盤 tab20)
+        # 2. 畫出成功分群的生活圈
         gdf_clustered = gdf_res_map[gdf_res_map["生活圈分群ID"] != -1]
         if not gdf_clustered.empty:
             gdf_clustered.plot(
@@ -379,5 +392,4 @@ if st.button("🔥 執行單次空間失能評估"):
         ax.set_ylabel("TWD97 Y 座標 (m)")
         ax.grid(True, linestyle=":", alpha=0.5)
         
-        # 丟給 streamlit 渲染，絕對秒開、流暢且不閃退！
         st.pyplot(fig)
