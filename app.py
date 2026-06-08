@@ -136,11 +136,11 @@ gdf_grids = st.session_state["gdf_grids"]
 to_twd97 = Transformer.from_crs("EPSG:4326", "EPSG:3826", always_xy=True)
 
 # ==========================================
-# 🎛️ 側邊欄控制面板 (已按照要求完成大瘦身)
+# 🎛️ 側邊欄控制面板
 # ==========================================
 st.sidebar.header("🎯 災害情境自訂面板")
 
-# 僅留下最核心的影響半徑拉桿，其餘文字、名稱、按鈕與橫線全面移除
+# 僅留下最核心的影響半徑拉桿
 disaster_radius = st.sidebar.slider("指定道路失能半徑 (公尺)", min_value=100, max_value=5000, value=2000, step=100)
 
 # 初始化點擊座標（預設台中市中心）
@@ -255,7 +255,7 @@ def run_single_disaster_simulation(cx, cy, radius):
     else:
         cluster_count = 1
         
-    # 5. 完全遵循同學 Cell 11 的 4 指標幾何平均數計分公式 (連乘開四次方根)
+    # 5. 完全遵循同學的 4 指標幾何平均數計分公式 (連乘開四次方根)
     grid_centroids = gdf_grids.geometry.centroid
     baseline_scores = []
     post_scores = []
@@ -283,7 +283,7 @@ def run_single_disaster_simulation(cx, cy, radius):
     df_res = pd.DataFrame({
         "Grid_ID": gdf_grids["Grid_ID"].values,
         "災前_防災韌性(幾何平均)": baseline_scores,
-        "災後_防災韌性(幾極平均)": post_scores
+        "災後_防災韌性(幾何平均)": post_scores  # <--- 已成功修正打錯字的地方！
     })
     df_res["最終韌性退化差值"] = df_res["災後_防災韌性(幾何平均)"] - df_res["災前_防災韌性(幾何平均)"]
     
