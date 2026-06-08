@@ -80,7 +80,6 @@ def load_perfect_jupyter_data():
     gdf_v_pop["村里總面積"] = gdf_v_pop.geometry.area
 
     # C. 建立網格底圖面 (用於承接生活圈計分渲染)
-    # 模擬建立大台中基礎空間網格 (若有真實網格 shp 亦可直接讀取)
     bbox = gdf_corridors.total_bounds
     x_coords = np.arange(bbox[0], bbox[2], 1000)
     y_coords = np.arange(bbox[1], bbox[3], 1000)
@@ -92,9 +91,12 @@ def load_perfect_jupyter_data():
             grid_geoms.append(Polygon([(x, y), (x+1000, y), (x+1000, y+1000), (x, y+1000)]))
             grid_ids.append(f"G_{count}")
             count += 1
-    gdf_grids = gpd.GeoDataFrame({"Grid_ID": grid_ids}, geometry=grid_geoms, crs="EPSG:3826")
-    # 僅保留與生活圈有重疊的實體網格
-    gdf_grids = gpd.sjoin(gdf_grids, gdf_corridors[["geometry"]], how="inner", predicate="intersects").drop_columns_if_exist=True
+    gdf_grids_raw = gpd.GeoDataFrame({"Grid_ID": grid_ids}, geometry=grid_geoms, crs="EPSG:3826")
+    
+    # 【完美修正】安全執行空間交叉篩選，移除錯誤尾綴
+    gdf_grids = gpd.sjoin(gdf_grids_raw, gdf_corridors[["geometry"]], how="inner", predicate="intersects")
+    if "index_right" in gdf_grids.columns:
+        gdf_grids = gdf_grids.drop(columns=["index_right"])
     gdf_grids = gdf_grids.loc[~gdf_grids.index.duplicated(keep='first')].reset_index(drop=True)
 
     # D. 載入各類機能設施點位
@@ -165,14 +167,12 @@ if map_data and map_data.get("last_clicked"):
     st.session_state["twd97_y"] = ty
 
 # ==========================================
-# 4. 🛠️ 核心計分架構：完全取代原本的舊模擬計法
+# 4. 🛠️ 核心計分架構
 # ==========================================
 def calculate_perfect_scores(gdf_corridors_input, affected_cluster_id=None, penalty_ratio=0.85):
     gdf_working_corridors = gdf_corridors_input.copy()
     
-    # -----------------------------------------------------------------
-    # [概念 1] 空間幾何交集：拿生活圈面去切村里底圖，精算面積權重拆分人口 (分母)
-    # -----------------------------------------------------------------
+    # 空間幾何交集：拆分村里人口
     try:
         intersections = gpd.overlay(gdf_working_corridors, gdf_v_pop, how="intersection")
         if "cluster_id" not in intersections.columns:
@@ -189,14 +189,11 @@ def calculate_perfect_scores(gdf_corridors_input, affected_cluster_id=None, pena
         else:
             raise ValueError
     except:
-        # 空間分析安全防護備用
         gdf_joined_pop = gpd.sjoin(gdf_v_pop, gdf_working_corridors, how="inner", predicate="intersects")
         df_cluster_pop_perfect = gdf_joined_pop.groupby("cluster_id")["total"].sum().reset_index()
         df_cluster_pop_perfect.columns = ["cluster_id", "生活圈真實總人口_分母"]
     
-    # -----------------------------------------------------------------
-    # [概念 2] 分子計算：統計各支援生活圈之機能點數量與避難收容所容量
-    # -----------------------------------------------------------------
+    # 統計資源點
     all_fac_rows = []
     global_counts = {}
     
@@ -228,9 +225,6 @@ def calculate_perfect_scores(gdf_corridors_input, affected_cluster_id=None, pena
         df_cluster_counts = pd.DataFrame(columns=["cluster_id", "醫院", "五大超商", "量販店", "加油站"])
         df_indoor_sum = pd.DataFrame(columns=["cluster_id", "生活圈總室內人數_分子"])
 
-    # -----------------------------------------------------------------
-    # [概念 3] ✨核心公式計分✨：塞進 DataFrame 執行全域均權正規化與封頂
-    # -----------------------------------------------------------------
     df_scores_calc = gdf_working_corridors[["cluster_id"]].merge(df_cluster_counts, on="cluster_id", how="left")
     df_scores_calc = df_scores_calc.merge(df_indoor_sum, on="cluster_id", how="left")
     df_scores_calc = df_scores_calc.merge(df_cluster_pop_perfect, on="cluster_id", how="left").fillna(0)
@@ -239,7 +233,6 @@ def calculate_perfect_scores(gdf_corridors_input, affected_cluster_id=None, pena
         g_count = global_counts.get(col, 1)
         df_scores_calc[f"{col}_因子分數"] = df_scores_calc[col] / g_count if col in df_scores_calc.columns else 0.0
 
-    # 計算避難收容所供需比分數，並強制封頂在 1.5 倍
     shelter_ratio = np.where(
         df_scores_calc["生活圈真實總人口_分母"] > 0,
         df_scores_calc["生活圈總室內人數_分子"] / df_scores_calc["生活圈真實總人口_分母"],
@@ -249,9 +242,7 @@ def calculate_perfect_scores(gdf_corridors_input, affected_cluster_id=None, pena
 
     gdf_output = gdf_working_corridors.merge(df_scores_calc, on="cluster_id", how="left").fillna(0)
     
-    # -----------------------------------------------------------------
-    # [概念 4] 特徵縮放 (Min-Max Normalization) 統一量綱
-    # -----------------------------------------------------------------
+    # 特徵縮放
     def min_max_norm(series):
         if series.max() == series.min():
             return pd.Series(0.1, index=series.index)
@@ -264,15 +255,12 @@ def calculate_perfect_scores(gdf_corridors_input, affected_cluster_id=None, pena
     gdf_output["避難收容_Norm"] = min_max_norm(gdf_output["避難收容所_因子分數"])
     gdf_output["Closeness_Norm"] = min_max_norm(gdf_output["跨區_Closeness_權重"])
 
-    # 💥 空間受災網絡失能衰退處理 (若受到波及，則對基礎特徵分數進行相應衰減)
     if affected_cluster_id is not None:
         mask = gdf_output["cluster_id"] == affected_cluster_id
         for norm_col in ["醫院_Norm", "五大超商_Norm", "量販店_Norm", "加油站_Norm", "避難收容_Norm", "Closeness_Norm"]:
             gdf_output.loc[mask, norm_col] *= (1.0 - penalty_ratio)
 
-    # -----------------------------------------------------------------
-    # [概念 5] --- 方案 B：破解木桶效應的幾何平均法 (Geometric Mean) ---
-    # -----------------------------------------------------------------
+    # 方案 B：幾何平均法
     eps = 0.01
     gdf_output["生活圈防災機能總分數"] = (
         (gdf_output["醫院_Norm"] + eps) *
@@ -292,33 +280,28 @@ st.subheader("🏁 第二步：啟動空間網格之計量地理評估")
 if st.button("🔥 執行單次空間失能評估"):
     with st.spinner("⏳ 正在精算全台中市防災生活圈幾何切割與真實分數合流..."):
         
-        # 1. 地理對位：找出滑鼠落點的災害中心位置與影響範圍
         disaster_point = Point(st.session_state["twd97_x"], st.session_state["twd97_y"])
         disaster_zone = disaster_point.buffer(disaster_radius)
         
-        # 識別受衝擊的生活圈 ID
         intersecting_clusters = gdf_corridor_polygons[gdf_corridor_polygons.intersects(disaster_zone)]
         target_cluster_id = intersecting_clusters.iloc[0]["cluster_id"] if not intersecting_clusters.empty else gdf_corridor_polygons.iloc[0]["cluster_id"]
             
-        # 2. 呼叫新核心計分機制：分別產出「災前完美值」與「災後實質網路降解值」
         gdf_baseline_res = calculate_perfect_scores(gdf_corridor_polygons, affected_cluster_id=None)
         gdf_post_res = calculate_perfect_scores(gdf_corridor_polygons, affected_cluster_id=target_cluster_id, penalty_ratio=0.85)
         
-        # 3. 🛠️ 屬性無縫封裝至實體地理網格 (透過空間對接，將生活圈的核心分數繼承給網格面)
+        # 網格中心點繼承生活圈分數
         grid_centroids = gdf_grids.copy()
         grid_centroids["geometry"] = grid_centroids.geometry.centroid
         
-        # 將網格中心點與生活圈面進行對接，判斷每個格子屬於哪一個 Louvain 生活圈群
         grid_joined_base = gpd.sjoin(grid_centroids, gdf_baseline_res[["cluster_id", "生活圈防災機能總分數", "生活圈真實總人口_分母"]], how="left", predicate="within")
         grid_joined_post = gpd.sjoin(grid_centroids, gdf_post_res[["cluster_id", "生活圈防災機能總分數"]], how="left", predicate="within")
         
-        # 將對接結果合併回實體網格面圖層 (gdf_grids)
         gdf_final_grids = gdf_grids.copy()
         gdf_final_grids["生活圈分群ID"] = grid_joined_base["cluster_id"].fillna(-1).astype(int)
         gdf_final_grids["生活圈真實總人口_分母"] = grid_joined_base["生活圈真實總人口_分母"].fillna(0)
         gdf_final_grids["災前_防災韌性(幾何平均)"] = grid_joined_base["生活圈防災機能總分數"].fillna(0)
-        gdf_final_grids["災後_防災韌性(幾何平均)"] = grid_joined_post["生活圈防災機能總分數"].fillna(0)
-        gdf_final_grids["最終韌性退化差值"] = gdf_final_grids["災後_防災韌性(幾何平均)"] - gdf_final_grids["災前_防災韌性(幾何平均)"]
+        gdf_final_grids["災後_防災韌性(幾微平均)"] = grid_joined_post["生活圈防災機能總分數"].fillna(0)
+        gdf_final_grids["最終韌性退化差值"] = gdf_final_grids["災後_防災韌性(幾微平均)"] - gdf_final_grids["災前_防災韌性(幾何平均)"]
         
         # ==========================================
         # 🎨 繪製多彩地理對位分色分群成果圖
@@ -326,7 +309,6 @@ if st.button("🔥 執行單次空間失能評估"):
         st.markdown("### 📊 全臺中市災後實體防衛空間網格化評分成果圖")
         fig, ax = plt.subplots(figsize=(11, 8.5), dpi=150)
         
-        # 依據生活圈群 ID 進行分色分群渲染，完美展現地理對位
         gdf_final_grids.plot(
             column="生活圈分群ID", 
             ax=ax, 
@@ -339,12 +321,10 @@ if st.button("🔥 執行單次空間失能評估"):
             legend_kwds={'title': '🏡 生活圈分群 ID', 'loc': 'upper left', 'bbox_to_anchor': (1.02, 1)}
         )
         
-        # 受災核心區塊加上紅色虛線框與斜線鋪面（Hatch）
         gdf_hit_grids = gdf_final_grids[gdf_final_grids["生活圈分群ID"] == target_cluster_id]
         if not gdf_hit_grids.empty:
             gdf_hit_grids.plot(ax=ax, facecolor="none", edgecolor="#de423b", linewidth=0.5, hatch="//")
             
-        # 劃定模擬災害破壞半徑邊界線
         gpd.GeoSeries([disaster_zone]).plot(ax=ax, facecolor="none", edgecolor="#222222", linewidth=2, linestyle="--")
         ax.scatter(st.session_state["twd97_x"], st.session_state["twd97_y"], color="#f1c40f", marker="X", s=180, edgecolor="black", zorder=15, label="💥 災害模擬中心")
         
@@ -360,20 +340,18 @@ if st.button("🔥 執行單次空間失能評估"):
         # ==========================================
         st.subheader("📊 各防衛生活圈網格統計與網絡幾何退化紀錄")
         
-        # 以生活圈為單位匯總呈現給使用者看
         df_summary = gdf_final_grids.groupby("生活圈分群ID").agg({
             "Grid_ID": "count",
             "生活圈真實總人口_分母": "first",
             "災前_防災韌性(幾何平均)": "first",
-            "災後_防災韌性(幾何平均)": "first",
+            "災後_防災韌性(幾微平均)": "first",
             "最終韌性退化差值": "first"
         }).reset_index()
         
         df_summary["防衛生活圈名稱"] = [f"🏡 真實生活圈 {int(cid)}" if cid != target_cluster_id else f"🚨 真實生活圈 {int(cid)} (受災核心)" for cid in df_summary["生活圈分群ID"]]
-        df_summary = df_summary.rename(columns={"Grid_ID": "涵蓋空間網格數", "生活圈真實總人口_分母": "精算真實總人口"})
+        df_summary = df_summary.rename(columns={"Grid_ID": "涵蓋空間網格數", "生活圈真實總人口_分母": "精算真實總人口", "災後_防災韌性(幾微平均)": "災後_防災韌性(幾何平均)"})
         
-        # 排序並過濾掉未成功匹配的無效區塊
-        df_summary = df_summary[df_summary["生活圈分群ID"] != -1].sort_values(by="災後_防災韌性(幾何平均)", ascending=False).reset_index(drop=True)
+        df_summary = df_summary[df_summary["生活圈分群ID"] != -1].sort_values(by="災前_防災韌性(幾何平均)", ascending=False).reset_index(drop=True)
         
         columns_order = ["防衛生活圈名稱", "涵蓋空間網格數", "精算真實總人口", "災前_防災韌性(幾何平均)", "災後_防災韌性(幾何平均)", "最終韌性退化差值"]
         st.dataframe(
