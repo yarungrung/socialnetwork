@@ -79,7 +79,7 @@ def load_perfect_jupyter_data():
         
     gdf_v_pop["村里總面積"] = gdf_v_pop.geometry.area
 
-    # C. 建立網格底圖面 (用於承接生活圈計分渲染)
+    # C. 建立網格底圖面
     bbox = gdf_corridors.total_bounds
     x_coords = np.arange(bbox[0], bbox[2], 1000)
     y_coords = np.arange(bbox[1], bbox[3], 1000)
@@ -93,7 +93,6 @@ def load_perfect_jupyter_data():
             count += 1
     gdf_grids_raw = gpd.GeoDataFrame({"Grid_ID": grid_ids}, geometry=grid_geoms, crs="EPSG:3826")
     
-    # 安全執行空間交叉篩選，移除非預期欄位
     gdf_grids = gpd.sjoin(gdf_grids_raw, gdf_corridors[["geometry"]], how="inner", predicate="intersects")
     if "index_right" in gdf_grids.columns:
         gdf_grids = gdf_grids.drop(columns=["index_right"])
@@ -293,21 +292,25 @@ if st.button("🔥 執行單次空間失能評估"):
         grid_centroids = gdf_grids.copy()
         grid_centroids["geometry"] = grid_centroids.geometry.centroid
         
-        # 【關鍵修復核心】切片時務必強行塞入 "geometry" 欄位，確保它維持 GeoDataFrame 身份，不再噴發 ValueError！
-        grid_joined_base = gpd.sjoin(
+        # 進行空間對位串接
+        grid_joined_base_raw = gpd.sjoin(
             grid_centroids, 
             gdf_baseline_res[["cluster_id", "生活圈防災機能總分數", "生活圈真實總人口_分母", "geometry"]], 
             how="left", 
             predicate="within"
         )
-        grid_joined_post = gpd.sjoin(
+        grid_joined_post_raw = gpd.sjoin(
             grid_centroids, 
             gdf_post_res[["cluster_id", "生活圈防災機能總分數", "geometry"]], 
             how="left", 
             predicate="within"
         )
         
-        # 將對接數據貼回實體網格面 (gdf_grids)
+        # 【💡關鍵核心修復點】：利用 .loc 與 ~df.index.duplicated 剪除因邊界重疊產生的 duplicate labels 複製品！
+        grid_joined_base = grid_joined_base_raw.loc[~grid_joined_base_raw.index.duplicated(keep='first')]
+        grid_joined_post = grid_joined_post_raw.loc[~grid_joined_post_raw.index.duplicated(keep='first')]
+        
+        # 將乾淨且一對一對齊的數據貼回實體網格面 (gdf_grids)
         gdf_final_grids = gdf_grids.copy()
         gdf_final_grids["生活圈分群ID"] = grid_joined_base["cluster_id"].fillna(-1).astype(int)
         gdf_final_grids["生活圈真實總人口_分母"] = grid_joined_base["生活圈真實總人口_分母"].fillna(0)
