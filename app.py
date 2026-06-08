@@ -30,10 +30,16 @@ st.title("🗺️ 臺中市都市防災空間網絡韌性評估系統")
 # 固定災害名稱變數
 disaster_name = "突發性空間失能事件"
 
+# 核心需要用到的變數清單
+required_keys = ["G_proj", "G_undirected", "road_node_to_facilities", "gdf_grids", "road_tree", "node_ids"]
+
+# 檢查是否所有必要的變數都已經初始化完畢
+all_keys_exist = all(k in st.session_state for k in required_keys)
+
 # ==========================================
 # 📥 資料載入與初始化區 (整合至 Session State)
 # ==========================================
-if "initialized" not in st.session_state:
+if "initialized" not in st.session_state or not all_keys_exist:
     with st.spinner("⏳ 正在加載臺中市路網與機能圖資（首次啟動約需 1 分鐘，請稍候）..."):
         try:
             data_folder = "data"  
@@ -101,7 +107,7 @@ if "initialized" not in st.session_state:
                 fac_coords = np.array([[geom.x, geom.y] for geom in gdf_fac.geometry])
                 distances, indices = road_tree.query(fac_coords)
                 for idx, (dist, node_idx) in enumerate(zip(distances, indices)):
-                    if dist <= 300.0: # 放寬容許度確保機能設施黏上路網
+                    if dist <= 300.0: 
                         target_node = node_ids[node_idx]
                         if target_node not in road_node_to_facilities:
                             road_node_to_facilities[target_node] = []
@@ -110,24 +116,26 @@ if "initialized" not in st.session_state:
                             "data_row": gdf_fac.iloc[idx].to_dict()
                         })
 
-            # (D) 生成有效空間網格 (排除無路網的中央山脈大山區)
+            # (D) 生成有效空間網格 (400m 兼顧精度與流暢度)
             GRID_SIZE = 400 
             node_xs, node_ys = node_coords[:, 0], node_coords[:, 1]
             x_coords = np.arange(min(node_xs), max(node_xs), GRID_SIZE)
             y_coords = np.arange(min(node_ys), max(node_ys), GRID_SIZE)
             
-            # 先建立初步的所有網格
             raw_grid_geoms = [
                 Polygon([(x, y), (x + GRID_SIZE, y), (x + GRID_SIZE, y + GRID_SIZE), (x, y + GRID_SIZE)])
                 for x in x_coords for y in y_coords
             ]
             gdf_all_grids = gpd.GeoDataFrame(geometry=raw_grid_geoms, crs="EPSG:3826")
             
-            # 【關鍵優化】利用 Spatial Join，只保留「附近 2000 公尺內有道路路網節點」的有效市區/聚落網格
-            # 這樣畫出來的台中市地圖就不會是一塊死板的巨大長方形，而是符合實際聚落發展的形狀！
+            # 【幾何修正】修正拼錯字 gpd.gpd.sjoin -> gpd.sjoin
             nodes_buffer = gpd.GeoDataFrame(geometry=nodes_gdf.geometry.buffer(2000), crs="EPSG:3826")
-            gdf_grids = gpd.gpd.sjoin(gdf_all_grids, nodes_buffer, how="inner", predicate="intersects")
-            gdf_grids = gdf_grids.drop_columns(columns=["index_right"]).drop_duplicates(subset=["geometry"])
+            gdf_grids = gpd.sjoin(gdf_all_grids, nodes_buffer, how="inner", predicate="intersects")
+            
+            # 清理剩餘欄位
+            if "index_right" in gdf_grids.columns:
+                gdf_grids = gdf_grids.drop(columns=["index_right"])
+            gdf_grids = gdf_grids.drop_duplicates(subset=["geometry"])
             gdf_grids["Grid_ID"] = np.arange(len(gdf_grids))
             gdf_grids = gdf_grids.reset_index(drop=True)
             
@@ -144,7 +152,7 @@ if "initialized" not in st.session_state:
             st.error(f"❌ 圖資下載或空間交叉對接失敗，錯誤訊息: {str(e)}")
             st.stop()
 
-# 提取初始化後的資料
+# 安全提取初始化後的資料 (100% 避免 KeyError)
 G_proj = st.session_state["G_proj"]
 G_undirected = st.session_state["G_undirected"]
 road_node_to_facilities = st.session_state["road_node_to_facilities"]
@@ -213,7 +221,7 @@ if map_data and map_data.get("last_clicked"):
 st.info(f"🎯 **當前選定點** ➔ 緯度(Lat): {st.session_state['last_clicked_wgs84'][0]:.5f}, 經度(Lng): {st.session_state['last_clicked_wgs84'][1]:.5f} | **TWD97 投影座標** ➔ X: {st.session_state['twd97_x']:.1f}, Y: {st.session_state['twd97_y']:.1f}")
 
 # ==========================================
-# 🛠️ 核心運算演算法 (修復斑馬線錯位錯誤)
+# 🛠️ 核心運算演算法
 # ==========================================
 def run_single_disaster_simulation(cx, cy, radius):
     G_cracked = G_undirected.copy()
@@ -259,7 +267,6 @@ def run_single_disaster_simulation(cx, cy, radius):
                     G_fac_net.add_edge(u, v, weight=1.0)
         
         try:
-            # 限制災後最多只能跑 2500 公尺做生活圈互助
             reachable = nx.single_source_dijkstra_path_length(G_cracked, road_i, cutoff=2500, weight="weight")
         except:
             continue
@@ -280,7 +287,7 @@ def run_single_disaster_simulation(cx, cy, radius):
         for fac_node in comp:
             post_partition[fac_node] = comp_idx
     
-    # 5. 【完全解決斑馬線關鍵】一行一行嚴謹計算網格中心點的對接
+    # 5. 精確幾何一比一網格計算
     grid_centroids = gdf_grids.geometry.centroid
     
     baseline_scores = []
@@ -290,18 +297,16 @@ def run_single_disaster_simulation(cx, cy, radius):
     for idx in range(len(gdf_grids)):
         centroid = grid_centroids.iloc[idx]
         
-        # 災前/災後基底韌性分數
         s1_b, s2_b, s3_b, s4_b = 0.85, 0.90, 0.78, 0.88
         geom_mean_base = (s1_b * s2_b * s3_b * s4_b) ** 0.25
         baseline_scores.append(geom_mean_base)
         
         if centroid.within(disaster_zone):
             s1_p, s2_p, s3_p, s4_p = s1_b * 0.10, s2_b * 0.15, s3_b * 0.02, s4_b * 0.25
-            cluster_id = -1 # 受災失能區
+            cluster_id = -1 
         else:
             s1_p, s2_p, s3_p, s4_p = s1_b, s2_b, s3_b, s4_b
             
-            # 使用 cKDTree 嚴格尋找該網格在空間幾何上最近的路網節點
             dist, node_idx = road_tree.query([centroid.x, centroid.y])
             nearest_road_node = node_ids[node_idx]
             
@@ -315,7 +320,6 @@ def run_single_disaster_simulation(cx, cy, radius):
         post_scores.append(geom_mean_post)
         assigned_clusters.append(cluster_id)
         
-    # 【不使用危險的 index merge】直接將名單依序綁定入 dataframe，保證幾何與數據完全對齊
     df_bind = pd.DataFrame({
         "Grid_ID": gdf_grids["Grid_ID"].values,
         "災前_防災韌性(幾何平均)": baseline_scores,
@@ -370,17 +374,16 @@ if st.button("🔥 執行單次空間失能評估"):
         # ------------------------------------------
         st.subheader("🖼️ 全臺中市災後生活圈網絡空間裂解分群成果圖")
         
-        # 精準依據 Grid_ID 做幾何地圖對齊合併
         gdf_res_map = gdf_grids.merge(df_result, on="Grid_ID")
         
         fig, ax = plt.subplots(figsize=(11, 9), dpi=150)
         
-        # 1. 繪製受災與邊緣孤立區（淡淡的粉紅色）
+        # 1. 繪製受災與邊緣孤立區
         gdf_isolated = gdf_res_map[gdf_res_map["生活圈分群ID"] == -1]
         if not gdf_isolated.empty:
             gdf_isolated.plot(ax=ax, color="#fde8e7", edgecolor="none", alpha=0.9, label="網絡孤立點")
             
-        # 2. 繪製成功分裂、成塊狀分佈的防衛生活圈（使用 tab20 繽紛調色盤）
+        # 2. 繪製彩色生活圈
         gdf_clustered = gdf_res_map[gdf_res_map["生活圈分群ID"] != -1]
         if not gdf_clustered.empty:
             gdf_clustered.plot(
@@ -394,11 +397,10 @@ if st.button("🔥 執行單次空間失能評估"):
                 legend_kwds={'title': '防衛生活圈群集', 'loc': 'upper right', 'bbox_to_anchor': (1.28, 1)}
             )
             
-        # 3. 繪製災害破壞核心紅色虛線大圓圈
+        # 3. 繪製災害中心虛線大圓圈
         disaster_circ = Point(st.session_state["twd97_x"], st.session_state["twd97_y"]).buffer(disaster_radius)
         gpd.GeoSeries([disaster_circ]).plot(ax=ax, facecolor="none", edgecolor="#d9534f", linewidth=2.5, linestyle="--")
         
-        # 標註核心點
         ax.scatter(st.session_state["twd97_x"], st.session_state["twd97_y"], color="#d9534f", marker="X", s=150, zorder=5, label="災害中心點")
         
         ax.set_title(f"臺中市災後防衛生活圈空間裂解分群成果圖\n(模擬半徑: {disaster_radius} 公尺)", fontsize=15, fontweight='bold', pad=15)
