@@ -10,6 +10,7 @@ import pandas as pd
 from scipy.spatial import cKDTree
 from pyproj import Transformer
 from shapely.geometry import Polygon, Point
+import shapely.geometry
 from collections import defaultdict
 import matplotlib.pyplot as plt
 
@@ -60,6 +61,11 @@ def load_base_spatial_data():
     LIMIT_X = (180000, 250000)
     LIMIT_Y = (2650000, 2710000)
     
+    # 🗺️ 【核心防線升級】直接從 OSM 下載台中市精準行政區 Polygon (WGS84)
+    with st.spinner("🗺️ 正在從 OpenStreetMap 擷取大台中精準行政邊界..."):
+        taichung_boundary_gdf = ox.geocode_to_gdf("Taichung, Taiwan")
+        taichung_polygon = taichung_boundary_gdf.geometry.iloc[0]
+    
     # (A) 下載並投影台中路網
     G_raw = ox.graph_from_place("Taichung, Taiwan", network_type="drive")
     G_proj = ox.project_graph(G_raw, to_crs="EPSG:3826")
@@ -71,13 +77,6 @@ def load_base_spatial_data():
     nodes_gdf = ox.graph_to_gdfs(G_undirected, nodes=True, edges=False)
     node_ids = list(G_undirected.nodes())
     node_coords = np.array([[G_undirected.nodes[n]["x"], G_undirected.nodes[n]["y"]] for n in node_ids])
-    
-    # 💡 新增：為了防呆，在 WGS84 座標系下計算台中市路網的絕對四角邊界
-    nodes_gdf_wgs84 = nodes_gdf.to_crs("EPSG:4326")
-    min_lon, min_lat = nodes_gdf_wgs84.geometry.x.min(), nodes_gdf_wgs84.geometry.y.min()
-    max_lon, max_lat = nodes_gdf_wgs84.geometry.x.max(), nodes_gdf_wgs84.geometry.y.max()
-    # 取得大台中路網矩形外包界線
-    taichung_strict_box = [min_lat, max_lat, min_lon, max_lon]
     
     # (B) 載入四大機能點位資料
     data_layers = {}
@@ -113,7 +112,7 @@ def load_base_spatial_data():
         gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.iloc[:, 0], df.iloc[:, 1]))
         data_layers["gas"] = clean_and_project(gdf)
 
-    # 合併所有機能設施的座標建立空間 KDTree
+    # 合併空間 KDTree
     all_fac_coords = []
     all_fac_types = []
     for layer_name, gdf_fac in data_layers.items():
@@ -144,12 +143,11 @@ def load_base_spatial_data():
     gdf_grids = gdf_grids.drop_duplicates(subset=["geometry"]).reset_index(drop=True)
     gdf_grids["Grid_ID"] = np.arange(len(gdf_grids))
     
-    # 聚合成 18 個全連通面
+    # 聚合成 18 個連通面
     gdf_grids["mock_cluster"] = gdf_grids["Grid_ID"] % 18
     gdf_corridor_polygons = gdf_grids.dissolve(by="mock_cluster").reset_index()
     gdf_corridor_polygons = gdf_corridor_polygons.rename(columns={"mock_cluster": "cluster_id"})
     
-    # 模擬生成對應的 18 個生活圈評分數據
     np.random.seed(42)
     df_scores_calc = pd.DataFrame({
         "cluster_id": list(range(18)),
@@ -161,10 +159,10 @@ def load_base_spatial_data():
         "Closeness_Norm": np.random.uniform(0.1, 1.0, 18)
     })
     
-    return G_proj, G_undirected, gdf_grids, fac_tree, np.array(all_fac_coords), all_fac_types, gdf_corridor_polygons, df_scores_calc, taichung_strict_box
+    return G_proj, G_undirected, gdf_grids, fac_tree, np.array(all_fac_coords), all_fac_types, gdf_corridor_polygons, df_scores_calc, taichung_polygon
 
-# 呼開快取載入
-G_proj, G_undirected, gdf_grids, fac_tree, fac_coords_arr, fac_types_list, gdf_corridor_polygons, df_scores_calc, taichung_strict_box = load_base_spatial_data()
+# 載入基礎資料
+G_proj, G_undirected, gdf_grids, fac_tree, fac_coords_arr, fac_types_list, gdf_corridor_polygons, df_scores_calc, taichung_polygon = load_base_spatial_data()
 to_twd97 = Transformer.from_crs("EPSG:4326", "EPSG:3826", always_xy=True)
 
 # ==========================================
@@ -174,32 +172,50 @@ st.sidebar.header("🎯 災害情境自訂面板")
 disaster_radius = st.sidebar.slider("指定道路失能半徑 (公尺)", min_value=100, max_value=5000, value=2500, step=100)
 
 # ==============================================================================
-# 🎯 限制只能點選大台中：設定嚴格地理邊界控制
+# 🎯 限制只能點選大台中：世界遮罩聚光燈技術 (Spotlight Mask)
 # ==============================================================================
 st.markdown("### 📍 請在下方地圖上點選「災害中心點位置」")
-st.caption("💡 系統已嚴格限制大台中地圖邊界。若誤點擊彰化、南投等外縣市地區，系統將自動拒絕並提示。")
+st.caption("💡 系統已啟用「台中聚光燈遮罩」，台中市以外的縣市已作半透明遮蔽，請直接點選境內地標。")
 
-# 1. 重新調整大台中視覺中心與限縮邊界 (剔除大部分彰化與南投的可視區)
-taichung_center = [24.210, 120.680]
-taichung_bounds = [
-    [24.010, 120.400],  # 西南角：往北調高，直接把大肚溪以南的彰化大半切除在外
-    [24.430, 121.100]   # 東北角：限縮在和平區都市發展邊緣
-]
+# 1. 建立涵蓋全台灣/全球的巨大外部矩形
+world_box = Polygon([(118.0, 20.0), (123.5, 20.0), (123.5, 26.5), (118.0, 26.5)])
+# 2. 減去台中市的行政區 Polygon -> 得到一個「中間挖空台中市」的巨大遮罩面
+inverse_mask_geometry = world_box.difference(taichung_polygon)
+gdf_inverse_mask = gpd.GeoDataFrame(geometry=[inverse_mask_geometry], crs="EPSG:4326")
 
-# 2. 建立 Folium 地圖
+# 3. 初始化 Folium 地圖
+taichung_center = [24.220, 120.700]
 m = folium.Map(
     location=taichung_center,
-    zoom_start=11,          # 起始畫面放大，讓使用者能精準點選
-    min_zoom=11,            # 限制使用者不能縮小，防止看到全台灣
-    max_zoom=15,            
-    max_bounds=True,        # 啟動邊界限制
-    location_bounds=taichung_bounds, 
-    tiles="OpenStreetMap"   
+    zoom_start=10,
+    min_zoom=10,
+    max_zoom=15,
+    tiles="OpenStreetMap"
 )
 
-m.fit_bounds(taichung_bounds)
+# 4. 🔥 將遮罩塗上白色（或深灰色）疊加到地圖上，把外縣市蓋掉，留下台中市！
+folium.GeoJson(
+    gdf_inverse_mask,
+    style_function=lambda x: {
+        'fillColor': '#ffffff',  # 填滿白色 (也可以改成 #333333 變成暗色質感)
+        'color': '#ffffff',      # 線條顏色
+        'fillOpacity': 0.75,     # 75% 遮蔽率，讓外縣市隱約看得到但明顯變白
+        'weight': 0
+    }
+).add_to(m)
 
-# 如果已經點選過，則在地圖上畫出紅色標記與範圍
+# 5. 把台中市的邊界描上一條淡淡的紅線，更清晰
+folium.GeoJson(
+    gpd.GeoDataFrame(geometry=[taichung_polygon], crs="EPSG:4326"),
+    style_function=lambda x: {
+        'fillColor': 'none',
+        'color': '#ff4b4b',
+        'weight': 2,
+        'dashArray': '5, 5'
+    }
+).add_to(m)
+
+# 如果已經點選過，繪製紅點波及圈
 if "last_clicked_wgs84" in st.session_state and st.session_state["last_clicked_wgs84"] is not None:
     folium.Marker(
         location=st.session_state["last_clicked_wgs84"],
@@ -216,25 +232,23 @@ if "last_clicked_wgs84" in st.session_state and st.session_state["last_clicked_w
         fill_opacity=0.2
     ).add_to(m)
 
-# 3. 渲染地圖
-output = st_folium(m, width=900, height=480, key="taichung_folium_map")
+# 6. 渲染地圖
+output = st_folium(m, width=900, height=480, key="taichung_spotlight_map")
 
-# 4. 監聽點擊事件與雙重防呆過濾
+# 7. 點擊防呆判斷：利用 Shapely 判斷點選位置是否真的在台中 Polygon 內部！
 if output and output.get("last_clicked"):
     clicked_lat = output["last_clicked"]["lat"]
     clicked_lon = output["last_clicked"]["lng"]
+    clicked_point = Point(clicked_lon, clicked_lat) # 注意 Shapely 是 (X, Y) 也就是 (經度, 緯度)
     
-    # 🛡️ 核心防護：比對大台中真實路網多邊形四角矩形邊界 (taichung_strict_box: [min_lat, max_lat, min_lon, max_lon])
-    if (taichung_strict_box[0] <= clicked_lat <= taichung_strict_box[1] and 
-        taichung_strict_box[2] <= clicked_lon <= taichung_strict_box[3]):
-        
-        # 通過驗證，寫入 Session 狀態
+    # 精準幾何檢查：點擊點是否被台中市多邊形「包含」
+    if taichung_polygon.contains(clicked_point):
         st.session_state["last_clicked_wgs84"] = (clicked_lat, clicked_lon)
         twd97_x, twd97_y = to_twd97.transform(clicked_lon, clicked_lat)
         st.session_state["twd97_x"] = twd97_x
         st.session_state["twd97_y"] = twd97_y
     else:
-        st.error("🚨 偵測到點擊位置落於彰化、南投或其他鄰近外縣市！請重新在大台中市境內（路網覆蓋區）點選。")
+        st.error("🚨 錯誤！您點選的位置屬於彰化、南投等外縣市（已被遮罩遮蔽區）。請重新在亮區（台中市內）點選！")
 
 # ==========================================
 # 🛠️ 核心 Louvain 與真實擴散退化計算模組
@@ -301,21 +315,17 @@ def calculate_disaster_resilience_degradation(
     return df_bind
 
 # ==========================================
-# 🏃‍♂️ 執行與結果繪製 (地圖居中 + 圖例橫向置底完美版)
+# 🏃‍♂️ 執行與結果繪製
 # ==========================================
 st.markdown("---")
 st.subheader("🏁 第二步：啟動生活圈分群模擬與指標計算")
 
-# 防止未點選座標時執行報錯的保護機制
 if "twd97_x" not in st.session_state:
-    st.info("💡 請先在上方地圖上點選一個災害中心點，再啟動模擬評估。")
+    st.info("💡 請先在上方地圖上點選一個台中市境內的災害中心點，再啟動模擬評估。")
 else:
     if st.button("🔥 執行單次空間失能評估", key="fixed_louvain_plot"):
-        with st.spinner(f"⏳ 正在調用 Louvain 社群網路模組，為大台中進行空間裂解分群..."):
+        with st.spinner(f"⏳ 正在調用 Louvain 社群網路模組..."):
             
-            # -------------------------------------------------------------
-            # 1. 執行真實 Louvain 社群演算法
-            # -------------------------------------------------------------
             G_fac_net = nx.Graph()
             for i in range(len(fac_coords_arr)):
                 G_fac_net.add_node(i, fac_type=fac_types_list[i])
@@ -335,9 +345,6 @@ else:
             except:
                 fac_to_cluster = {i: (i % 8) for i in range(len(fac_coords_arr))}
 
-            # -------------------------------------------------------------
-            # 2. KDTree 空間對接與幾何平均降解計算
-            # -------------------------------------------------------------
             grid_centroids = gdf_grids.geometry.centroid
             grid_coords = np.array([[c.x, c.y] for c in grid_centroids])
             
@@ -387,15 +394,14 @@ else:
                 "Grid_ID": gdf_grids["Grid_ID"].values,
                 "生活圈分群ID": assigned_clusters,
                 "災前_防災韌性(幾何平均)": baseline_scores,
-                "災後_防災韌性(幾何平均)": post_scores
+                "災後_防災韌性(幾幾何平均)": post_scores
             })
-            df_result["最終韌性退化差值"] = df_result["災後_防災韌性(幾何平均)"] - df_result["災前_防災韌性(幾何平均)"]
+            df_result["最終韌性退化差值"] = df_result["災後_防災韌性(幾幾何平均)"] - df_result["災前_防災韌性(幾何平均)"]
 
             st.success(f"🎉 真實 Louvain 生活圈網路對接與幾何平均降解計算完成！")
             
             gdf_res_map = gdf_grids.merge(df_result, on="Grid_ID")
             
-            # 🌐 座標轉換
             import plotly.express as px
             import plotly.graph_objects as go
 
@@ -409,7 +415,6 @@ else:
                 return f"🏡 生活圈分區 {int(cid)}"
             gdf_res_map_wgs84["生活圈名稱"] = gdf_res_map_wgs84["生活圈分群ID"].apply(label_cluster_name)
 
-            # 🎨 繪製 Plotly
             fig_plotly = px.scatter(
                 gdf_res_map_wgs84, 
                 x="lon", 
@@ -421,7 +426,7 @@ else:
                 hover_data={
                     "Grid_ID": True, 
                     "災前_防災韌性(幾何平均)": ":.2f", 
-                    "災後_防災韌性(幾何平均)": ":.2f", 
+                    "災後_防災韌性(幾幾何平均)": ":.2f", 
                     "最終韌性退化差值": ":.2f",
                     "lon": False, 
                     "lat": False, 
@@ -442,7 +447,6 @@ else:
                 )
             )
 
-            # ⚙️ 佈局優化 (橫向置底與完美置中)
             fig_plotly.update_layout(
                 width=900,
                 height=850,  
@@ -465,13 +469,11 @@ else:
 
             st.plotly_chart(fig_plotly, use_container_width=False)
             
-            # 📊 呈現綜合統計表
             st.subheader("📊 災後防衛生活圈指標與網絡退化綜合統計表")
-            
             df_summary = df_result.groupby("生活圈分群ID").agg(
                 包含網格數=("Grid_ID", "count"),
                 災前平均韌性=("災前_防災韌性(幾何平均)", "mean"),
-                災後平均韌性=("災後_防災韌性(幾何平均)", "mean"),
+                災後平均韌性=("災後_防災韌性(幾幾何平均)", "mean"),
                 平均韌性退化差值=("最終韌性退化差值", "mean")
             ).reset_index()
             
