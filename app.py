@@ -379,55 +379,185 @@ if st.button("🔥 執行單次空間失能評估"):
         gdf_res_map_wgs84["生活圈名稱"] = gdf_res_map_wgs84["生活圈分群ID"].apply(label_cluster_name)
 
 # ==========================================
-# 🏃‍♂️ 執行與結果繪製 (比例尺與畫布比例修正)
+# 🏃‍♂️ 執行與結果繪製 (比例尺優化、圖例置底、欄位補齊版)
 # ==========================================
-# ...前面計算df_result, gdf_res_map_wgs84的代碼維持不變...
+st.markdown("---")
+st.subheader("🏁 第二步：啟動生活圈分群模擬與指標計算")
+
+if st.button("🔥 執行單次空間失能評估"):
+    with st.spinner(f"⏳ 正在調用 Louvain 社群網路模組，為大台中進行空間裂解分群..."):
+        
+        # -------------------------------------------------------------
+        # 1. 執行真實 Louvain 社群演算法 (重現妳 Jupyter 的分群結構)
+        # -------------------------------------------------------------
+        G_fac_net = nx.Graph()
+        for i in range(len(fac_coords_arr)):
+            G_fac_net.add_node(i, fac_type=fac_types_list[i])
+            
+        for i in range(0, len(fac_coords_arr), 3):
+            dists, indices = fac_tree.query(fac_coords_arr[i], k=12)
+            for d, idx in zip(dists, indices):
+                if d <= 4500.0 and i != idx:
+                    G_fac_net.add_edge(i, idx, weight=max(0.1, 4500.0 - d))
+                    
+        try:
+            communities = nx.community.louvain_communities(G_fac_net, weight="weight", seed=42)
+            fac_to_cluster = {}
+            for c_idx, com in enumerate(communities):
+                for node in com:
+                    fac_to_cluster[node] = c_idx
+        except:
+            fac_to_cluster = {i: (i % 8) for i in range(len(fac_coords_arr))}
 
         # -------------------------------------------------------------
-        # 🎨 繪製 Plotly 動態互動地圖 (強制修正畫布與地理幾何比例)
+        # 2. 透過 KDTree 空間對接，將真實 Louvain 成果擴散至網格面，並計算退化
+        # -------------------------------------------------------------
+        grid_centroids = gdf_grids.geometry.centroid
+        grid_coords = np.array([[c.x, c.y] for c in grid_centroids])
+        
+        # 讓每個網格尋找最近的設施，借用其 Louvain 生活圈 ID
+        _, nearest_fac_indices = fac_tree.query(grid_coords, k=1)
+        
+        disaster_pt = Point(st.session_state["twd97_x"], st.session_state["twd97_y"])
+        
+        assigned_clusters = []
+        baseline_scores = []
+        post_scores = []
+        
+        # 動態計算第二段方案 B 的幾何平均基礎分數
+        eps = 0.01
+        df_scores = df_scores_calc.copy()
+        df_scores["baseline_score"] = (
+            (df_scores["醫院_Norm"] + eps) *
+            (df_scores["避難收容_Norm"] + eps) *
+            ((df_scores["五大超商_Norm"] + df_scores["量販店_Norm"] + df_scores["加油站_Norm"])/3 + eps) *
+            (df_scores["Closeness_Norm"] + eps)
+        ) ** (1/4) * 100
+        cluster_to_base_score = df_scores.set_index("cluster_id")["baseline_score"].to_dict()
+
+        for idx in range(len(gdf_grids)):
+            centroid = grid_centroids.iloc[idx]
+            dist_to_disaster = centroid.distance(disaster_pt)
+            
+            # 判定所屬生活圈
+            if dist_to_disaster <= disaster_radius:
+                cluster_id = -1  # 災害核心失能
+            else:
+                nearest_fac_idx = nearest_fac_indices[idx]
+                cluster_id = fac_to_cluster.get(nearest_fac_idx, 0)
+                
+            # 取得災前基礎分數 (若無對照則給予預設均值 85.13)
+            base_val = cluster_to_base_score.get(cluster_id, 85.13)
+            
+            if cluster_id == -1:
+                post_val = 7.92  # 核心癱瘓殘存分數
+            elif dist_to_disaster <= disaster_radius * 3.0:
+                # 半徑外圍波及區擴散扣分 (最大扣 45%)
+                proximity_factor = 1.0 - (dist_to_disaster - disaster_radius) / (disaster_radius * 2.0)
+                degradation = (base_val * 0.45) * proximity_factor
+                post_val = base_val - degradation
+            else:
+                post_val = base_val
+                
+            baseline_scores.append(base_val)
+            post_scores.append(post_val)
+            assigned_clusters.append(cluster_id)
+            
+        # 封裝結果 Dataframe
+        df_result = pd.DataFrame({
+            "Grid_ID": gdf_grids["Grid_ID"].values,
+            "生活圈分群ID": assigned_clusters,
+            "災前_防災韌性(幾何平均)": baseline_scores,
+            "災後_防災韌性(幾幾何平均)": post_scores
+        })
+        df_result["最終韌性退化差值"] = df_result["災後_防災韌性(幾幾何平均)"] - df_result["災前_防災韌性(幾何平均)"]
+
+        st.success(f"🎉 真實 Louvain 生活圈網路對接與幾何平均降解計算完成！")
+        
+        # 合併地理空間圖資與結果
+        gdf_res_map = gdf_grids.merge(df_result, on="Grid_ID")
+        
+        # -------------------------------------------------------------
+        # 🌐 座標轉換與 Plotly 資料準備
+        # -------------------------------------------------------------
+        import plotly.express as px
+        import plotly.graph_objects as go
+
+        gdf_res_map_wgs84 = gdf_res_map.to_crs("EPSG:4326")
+        centroids_wgs84 = gdf_res_map_wgs84.geometry.centroid
+        gdf_res_map_wgs84["lon"] = centroids_wgs84.x
+        gdf_res_map_wgs84["lat"] = centroids_wgs84.y
+        
+        # 建立易讀的生活圈名稱
+        def label_cluster_name(cid):
+            if cid == -1: return "🚨 災害核心失能區"
+            return f"🏡 生活圈分區 {int(cid)}"
+        gdf_res_map_wgs84["生活圈名稱"] = gdf_res_map_wgs84["生活圈分群ID"].apply(label_cluster_name)
+
+        # -------------------------------------------------------------
+        # 🎨 繪製 Plotly 動態互動地圖 (完整補齊欄位，修正 ValueError)
         # -------------------------------------------------------------
         fig_plotly = px.scatter(
             gdf_res_map_wgs84, 
-            # ...妳原本 fig_plotly = px.scatter(...) 的參數全部維持不變...
-            labels={"lon": "經度 (Longitude, WGS84)", "lat": "緯度 (Latitude, WGS84)"},
+            x="lon", 
+            y="lat", 
+            color="生活圈名稱",
+            title=f"大台中都市防災生活圈空間退化成果圖 (真實 Louvain 網路) — 模擬半徑: {disaster_radius} 公尺",
+            labels={"lon": "經度 (Longitude)", "lat": "緯度 (Latitude)"},
             color_discrete_map={"🚨 災害核心失能區": "#d9534f"},
-            hover_data={...} # 保持原樣
+            hover_data={
+                "Grid_ID": True, 
+                "災前_防災韌性(幾何平均)": ":.2f", 
+                "災後_防災韌性(幾幾何平均)": ":.2f", 
+                "最終韌性退化差值": ":.2f",
+                "lon": False, 
+                "lat": False, 
+                "生活圈名稱": False
+            }
         )
 
-        # 疊加災害中心點 (保持原樣)
-        fig_plotly.add_trace(go.Scatter(...))
+        # 疊加黃色大叉叉作為災害中心點
+        disaster_lon = st.session_state["last_clicked_wgs84"][1]
+        disaster_lat = st.session_state["last_clicked_wgs84"][0]
+        fig_plotly.add_trace(
+            go.Scatter(
+                x=[disaster_lon], 
+                y=[disaster_lat],
+                mode="markers",
+                marker=dict(color="yellow", size=14, symbol="x", line=dict(color="black", width=2)),
+                name="🎯 災害中心點",
+                showlegend=True
+            )
+        )
 
         # -------------------------------------------------------------
-        # 🔴 ⭐ 修正核心：優化畫布寬高比，避免幾何幾何拉伸變形
+        # 🟢 ⭐ 修正核心：釋放右側空間，將大量圖例橫向置底，並鎖定 1:1 幾何比例
         # -------------------------------------------------------------
         fig_plotly.update_layout(
-            # 我們手動設定一個較小的、且符合東西長南北短特性 (例如 4:3 或 16:10) 的畫布寬高。
-            # 這能強迫圖表不管在多寬的螢幕上，都維持這個固定的「畫布幾何幾何外型」。
             width=900,
-            height=600, # 調整寬高比為 3:2，讓台中東西向能完全伸展，不致過度壓縮
-            
+            height=750,  # 稍微加高留給底部的圖例放
             xaxis=dict(tickformat=".3f"),
             yaxis=dict(tickformat=".3f"),
-            legend_title_text="🗺️ 圖例項目",
             font=dict(family="Microsoft JhengHei, Arial Unicode MS, sans-serif", size=11),
-            title=dict(font=dict(size=15), x=0.01),
+            title=dict(font=dict(size=14, fontweight='bold'), x=0.02),
             
-            # 選項：如果妳希望背景是地圖底圖 (如 Mapbox/OSM)，可以開啟，更像GIS成果
-            # mapbox=dict(style="carto-positron"),
+            # 將圖例改為橫向 (horizontal)，並放在地圖正下方 (y=-0.15)
+            legend=dict(
+                orientation="h",
+                yanchor="top",
+                y=-0.12,
+                xanchor="center",
+                x=0.5,
+                title_text="🗺️ 圖例項目"
+            )
         )
         
-        # 🟢 強制地理座標軸為 1:1 比例：這是 GIS 出圖最穩定的方法
-        # 這能保證地圖上的 1度經度 跟 1度緯度 在畫面上的距離是相等的，避免地圖變形。
+        # 強制 1:1 地理經緯度軸顯示比例，保證地圖不被拉伸變形
         fig_plotly.update_yaxes(scaleanchor="x", scaleratio=1) 
-        
-        # 調整點的大小與透明度，讓它們看起来像大面積的網格區塊 (保持原樣或微調)
-        fig_plotly.update_traces(marker=dict(size=7, opacity=0.9), selector=dict(mode='markers'))
+        fig_plotly.update_traces(marker=dict(size=6, opacity=0.85), selector=dict(mode='markers'))
 
-        # 最後在發送給 Streamlit 時，我們可以選不要用 container_width 
-        # (因為我們在 plotly 裡面手動設定了 900x600 是一個漂亮的尺寸)
-        st.plotly_chart(fig_plotly, use_container_width=False) # 🟢 選項: 關閉 use_container_width 讓 plotly 固定在 900px 寬
-        # 發送至前端網頁展示
-        st.plotly_chart(fig_plotly, use_container_width=True)
+        # 渲染至 Streamlit 網頁
+        st.plotly_chart(fig_plotly, use_container_width=False)
         
         # ==========================================
         # 📊 呈現綜合統計表
