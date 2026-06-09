@@ -32,7 +32,6 @@ def load_chinese_font_prop():
             st.error(f"字體下載失敗：{e}")
             return None
             
-    # 直接建立並回傳字體屬性物件
     return fm.FontProperties(fname=font_path)
 
 # 取得字體屬性物件
@@ -72,6 +71,13 @@ def load_base_spatial_data():
     nodes_gdf = ox.graph_to_gdfs(G_undirected, nodes=True, edges=False)
     node_ids = list(G_undirected.nodes())
     node_coords = np.array([[G_undirected.nodes[n]["x"], G_undirected.nodes[n]["y"]] for n in node_ids])
+    
+    # 💡 新增：為了防呆，在 WGS84 座標系下計算台中市路網的絕對四角邊界
+    nodes_gdf_wgs84 = nodes_gdf.to_crs("EPSG:4326")
+    min_lon, min_lat = nodes_gdf_wgs84.geometry.x.min(), nodes_gdf_wgs84.geometry.y.min()
+    max_lon, max_lat = nodes_gdf_wgs84.geometry.x.max(), nodes_gdf_wgs84.geometry.y.max()
+    # 取得大台中路網矩形外包界線
+    taichung_strict_box = [min_lat, max_lat, min_lon, max_lon]
     
     # (B) 載入四大機能點位資料
     data_layers = {}
@@ -138,15 +144,12 @@ def load_base_spatial_data():
     gdf_grids = gdf_grids.drop_duplicates(subset=["geometry"]).reset_index(drop=True)
     gdf_grids["Grid_ID"] = np.arange(len(gdf_grids))
     
-    # -----------------------------------------------------------------
-    # ⭐ 模擬產生第 2 段所需的生活圈底圖面 (為了讓不依賴本地特定路徑也能在 GitHub 跑通)
-    # -----------------------------------------------------------------
-    # 我們用網格聚合成的大多邊形當作 18 個馬路全連通面 (Corridor Polygons)
+    # 聚合成 18 個全連通面
     gdf_grids["mock_cluster"] = gdf_grids["Grid_ID"] % 18
     gdf_corridor_polygons = gdf_grids.dissolve(by="mock_cluster").reset_index()
     gdf_corridor_polygons = gdf_corridor_polygons.rename(columns={"mock_cluster": "cluster_id"})
     
-    # 模擬生成對應的 18 個生活圈評分數據 (包含各大 Norm 指標)
+    # 模擬生成對應的 18 個生活圈評分數據
     np.random.seed(42)
     df_scores_calc = pd.DataFrame({
         "cluster_id": list(range(18)),
@@ -158,10 +161,10 @@ def load_base_spatial_data():
         "Closeness_Norm": np.random.uniform(0.1, 1.0, 18)
     })
     
-    return G_proj, G_undirected, gdf_grids, fac_tree, np.array(all_fac_coords), all_fac_types, gdf_corridor_polygons, df_scores_calc
+    return G_proj, G_undirected, gdf_grids, fac_tree, np.array(all_fac_coords), all_fac_types, gdf_corridor_polygons, df_scores_calc, taichung_strict_box
 
 # 呼開快取載入
-G_proj, G_undirected, gdf_grids, fac_tree, fac_coords_arr, fac_types_list, gdf_corridor_polygons, df_scores_calc = load_base_spatial_data()
+G_proj, G_undirected, gdf_grids, fac_tree, fac_coords_arr, fac_types_list, gdf_corridor_polygons, df_scores_calc, taichung_strict_box = load_base_spatial_data()
 to_twd97 = Transformer.from_crs("EPSG:4326", "EPSG:3826", always_xy=True)
 
 # ==========================================
@@ -171,39 +174,32 @@ st.sidebar.header("🎯 災害情境自訂面板")
 disaster_radius = st.sidebar.slider("指定道路失能半徑 (公尺)", min_value=100, max_value=5000, value=2500, step=100)
 
 # ==============================================================================
-# 🎯 限制只能點選大台中：設定地理邊界 (Max Bounds) 與初始中心
+# 🎯 限制只能點選大台中：設定嚴格地理邊界控制
 # ==============================================================================
-import folium
-from streamlit_folium import st_folium
-
 st.markdown("### 📍 請在下方地圖上點選「災害中心點位置」")
-st.caption("💡 系統已鎖定大台中地圖邊界，防止誤點選至其他縣市。")
+st.caption("💡 系統已嚴格限制大台中地圖邊界。若誤點擊彰化、南投等外縣市地區，系統將自動拒絕並提示。")
 
-# 1. 定義大台中最完美的初始中心點 (經緯度)
-taichung_center = [24.230, 120.750]
-
-# 2. 嚴格定義大台中的地理邊界西南角 (SW) 與東北角 (NE) [緯度, 經度]
-# 這樣可以強迫畫面卡在大台中，滑不出去彰化或苗栗
+# 1. 重新調整大台中視覺中心與限縮邊界 (剔除大部分彰化與南投的可視區)
+taichung_center = [24.210, 120.680]
 taichung_bounds = [
-    [23.900, 120.350],  # 西南角 (包含龍井、烏日、大肚邊界)
-    [24.500, 121.450]   # 東北角 (包含大甲、和平山區邊界)
+    [24.010, 120.400],  # 西南角：往北調高，直接把大肚溪以南的彰化大半切除在外
+    [24.430, 121.100]   # 東北角：限縮在和平區都市發展邊緣
 ]
 
-# 3. 建立地圖，並補上限制邊界的參數
+# 2. 建立 Folium 地圖
 m = folium.Map(
     location=taichung_center,
-    zoom_start=10,          # 最佳初始縮放大小，一眼看清全台中
-    min_zoom=10,            # 限制不能縮得太小看見全台灣
-    max_zoom=14,            # 限制不能放得太大失去大局觀
-    max_bounds=True,        # 🔥 啟動邊界限制核心！
-    location_bounds=taichung_bounds, # 鎖定這區塊
-    tiles="OpenStreetMap"   # 依舊使用妳喜歡的標準 OpenStreetMap 底圖
+    zoom_start=11,          # 起始畫面放大，讓使用者能精準點選
+    min_zoom=11,            # 限制使用者不能縮小，防止看到全台灣
+    max_zoom=15,            
+    max_bounds=True,        # 啟動邊界限制
+    location_bounds=taichung_bounds, 
+    tiles="OpenStreetMap"   
 )
 
-# 4. 固定限制地圖的滑動範圍，滑到邊緣會自動彈回來
 m.fit_bounds(taichung_bounds)
 
-# 如果使用者之前已經點選過，就在地圖上畫出紅色圓圈波及區 (保持妳原有的邏輯)
+# 如果已經點選過，則在地圖上畫出紅色標記與範圍
 if "last_clicked_wgs84" in st.session_state and st.session_state["last_clicked_wgs84"] is not None:
     folium.Marker(
         location=st.session_state["last_clicked_wgs84"],
@@ -211,38 +207,35 @@ if "last_clicked_wgs84" in st.session_state and st.session_state["last_clicked_w
         icon=folium.Icon(color="red", icon="info-sign")
     ).add_to(m)
     
-    # 畫出核心半徑範圍圈
     folium.Circle(
         location=st.session_state["last_clicked_wgs84"],
-        radius=disaster_radius, # 使用妳畫面上拉桿的半徑
+        radius=disaster_radius, 
         color="red",
         fill=True,
         fill_color="red",
         fill_opacity=0.2
     ).add_to(m)
 
-# 5. 將地圖渲染至網頁，並指定寬高
-output = st_folium(m, width=800, height=450)
+# 3. 渲染地圖
+output = st_folium(m, width=900, height=480, key="taichung_folium_map")
 
-# 6. 監聽點擊事件 (保持妳原本將 WGS84 轉為 TWD97 的座標處理邏輯)
+# 4. 監聽點擊事件與雙重防呆過濾
 if output and output.get("last_clicked"):
     clicked_lat = output["last_clicked"]["lat"]
     clicked_lon = output["last_clicked"]["lng"]
     
-    # 檢查點擊座標是否確實落在大台中安全邊界內，防止極端邊緣誤差
-    if (taichung_bounds[0][0] <= clicked_lat <= taichung_bounds[1][0] and 
-        taichung_bounds[0][1] <= clicked_lon <= taichung_bounds[1][1]):
+    # 🛡️ 核心防護：比對大台中真實路網多邊形四角矩形邊界 (taichung_strict_box: [min_lat, max_lat, min_lon, max_lon])
+    if (taichung_strict_box[0] <= clicked_lat <= taichung_strict_box[1] and 
+        taichung_strict_box[2] <= clicked_lon <= taichung_strict_box[3]):
         
+        # 通過驗證，寫入 Session 狀態
         st.session_state["last_clicked_wgs84"] = (clicked_lat, clicked_lon)
-        
-        # 這裡照抄妳原本的 pyproj 座標轉換 (WGS84 轉 TWD97 經緯度)，例如：
-        # transformer = Transformer.from_crs("EPSG:4326", "EPSG:3826", always_xy=True)
-        # twd97_x, twd97_y = transformer.transform(clicked_lon, clicked_lat)
-        # st.session_state["twd97_x"] = twd97_x
-        # st.session_state["twd97_y"] = twd97_y
+        twd97_x, twd97_y = to_twd97.transform(clicked_lon, clicked_lat)
+        st.session_state["twd97_x"] = twd97_x
+        st.session_state["twd97_y"] = twd97_y
     else:
-        st.warning("⚠️ 點選位置超出大台中核心評估範圍，請重新在台中市境內點選！")
-        
+        st.error("🚨 偵測到點擊位置落於彰化、南投或其他鄰近外縣市！請重新在大台中市境內（路網覆蓋區）點選。")
+
 # ==========================================
 # 🛠️ 核心 Louvain 與真實擴散退化計算模組
 # ==========================================
@@ -254,16 +247,11 @@ def calculate_disaster_resilience_degradation(
     radius: float,
     eps: float = 0.01
 ) -> pd.DataFrame:
-    """
-    精算核心：將幾何平均分數融入真實路網，並動態扣減退化差值。
-    """
     grid_centroids = gdf_grids.copy()
     grid_centroids["geometry"] = grid_centroids.geometry.centroid
     
-    # 空間對接找出每個網格落在第幾號真實生活圈多邊形內
     sj_grids = gpd.sjoin(grid_centroids, gdf_corridor_polygons[['cluster_id', 'geometry']], how="left", predicate="within")
     
-    # 計算幾何平均防災機能總分數 (方案 B)
     df_scores = df_scores_calc.copy()
     df_scores["baseline_score"] = (
         (df_scores["醫院_Norm"] + eps) *
@@ -282,12 +270,12 @@ def calculate_disaster_resilience_degradation(
         centroid = grid_centroids.geometry.iloc[idx]
         orig_cluster = sj_grids["cluster_id"].iloc[idx]
         
-        base_val = cluster_to_base_score.get(orig_cluster, 50.0) # 若沒對接到給予中位數防備分數
+        base_val = cluster_to_base_score.get(orig_cluster, 50.0) 
         dist_to_disaster = centroid.distance(disaster_point)
         
         if dist_to_disaster <= radius:
-            cluster_id = -1      # 核心失能
-            post_val = 7.92      # 核心低殘存分數 (100分制對應 0.0792)
+            cluster_id = -1      
+            post_val = 7.92      
         else:
             cluster_id = orig_cluster if not pd.isna(orig_cluster) else 0
             
@@ -306,9 +294,9 @@ def calculate_disaster_resilience_degradation(
         "Grid_ID": gdf_grids["Grid_ID"].values,
         "生活圈分群ID": assigned_clusters,
         "災前_防災韌性(幾何平均)": baseline_scores,
-        "災後_防災韌性(幾幾何平均)": post_scores
+        "災後_防災韌性(幾何平均)": post_scores
     })
-    df_bind["最終韌性退化差值"] = df_bind["災後_防災韌性(幾幾何平均)"] - df_bind["災前_防災韌性(幾何平均)"]
+    df_bind["最終韌性退化差值"] = df_bind["災後_防災韌性(幾何平均)"] - df_bind["災前_防災韌性(幾何平均)"]
     
     return df_bind
 
@@ -318,207 +306,182 @@ def calculate_disaster_resilience_degradation(
 st.markdown("---")
 st.subheader("🏁 第二步：啟動生活圈分群模擬與指標計算")
 
-if st.button("🔥 執行單次空間失能評估", key="fixed_louvain_plot"):
-    with st.spinner(f"⏳ 正在調用 Louvain 社群網路模組，為大台中進行空間裂解分群..."):
-        
-        # -------------------------------------------------------------
-        # 1. 執行真實 Louvain 社群演算法 (重現妳 Jupyter 的分群結構)
-        # -------------------------------------------------------------
-        G_fac_net = nx.Graph()
-        for i in range(len(fac_coords_arr)):
-            G_fac_net.add_node(i, fac_type=fac_types_list[i])
+# 防止未點選座標時執行報錯的保護機制
+if "twd97_x" not in st.session_state:
+    st.info("💡 請先在上方地圖上點選一個災害中心點，再啟動模擬評估。")
+else:
+    if st.button("🔥 執行單次空間失能評估", key="fixed_louvain_plot"):
+        with st.spinner(f"⏳ 正在調用 Louvain 社群網路模組，為大台中進行空間裂解分群..."):
             
-        for i in range(0, len(fac_coords_arr), 3):
-            dists, indices = fac_tree.query(fac_coords_arr[i], k=12)
-            for d, idx in zip(dists, indices):
-                if d <= 4500.0 and i != idx:
-                    G_fac_net.add_edge(i, idx, weight=max(0.1, 4500.0 - d))
+            # -------------------------------------------------------------
+            # 1. 執行真實 Louvain 社群演算法
+            # -------------------------------------------------------------
+            G_fac_net = nx.Graph()
+            for i in range(len(fac_coords_arr)):
+                G_fac_net.add_node(i, fac_type=fac_types_list[i])
+                
+            for i in range(0, len(fac_coords_arr), 3):
+                dists, indices = fac_tree.query(fac_coords_arr[i], k=12)
+                for d, idx in zip(dists, indices):
+                    if d <= 4500.0 and i != idx:
+                        G_fac_net.add_edge(i, idx, weight=max(0.1, 4500.0 - d))
+                        
+            try:
+                communities = nx.community.louvain_communities(G_fac_net, weight="weight", seed=42)
+                fac_to_cluster = {}
+                for c_idx, com in enumerate(communities):
+                    for node in com:
+                        fac_to_cluster[node] = c_idx
+            except:
+                fac_to_cluster = {i: (i % 8) for i in range(len(fac_coords_arr))}
+
+            # -------------------------------------------------------------
+            # 2. KDTree 空間對接與幾何平均降解計算
+            # -------------------------------------------------------------
+            grid_centroids = gdf_grids.geometry.centroid
+            grid_coords = np.array([[c.x, c.y] for c in grid_centroids])
+            
+            _, nearest_fac_indices = fac_tree.query(grid_coords, k=1)
+            disaster_pt = Point(st.session_state["twd97_x"], st.session_state["twd97_y"])
+            
+            assigned_clusters = []
+            baseline_scores = []
+            post_scores = []
+            
+            eps = 0.01
+            df_scores = df_scores_calc.copy()
+            df_scores["baseline_score"] = (
+                (df_scores["醫院_Norm"] + eps) *
+                (df_scores["避難收容_Norm"] + eps) *
+                ((df_scores["五大超商_Norm"] + df_scores["量販店_Norm"] + df_scores["加油站_Norm"])/3 + eps) *
+                (df_scores["Closeness_Norm"] + eps)
+            ) ** (1/4) * 100
+            cluster_to_base_score = df_scores.set_index("cluster_id")["baseline_score"].to_dict()
+
+            for idx in range(len(gdf_grids)):
+                centroid = grid_centroids.iloc[idx]
+                dist_to_disaster = centroid.distance(disaster_pt)
+                
+                if dist_to_disaster <= disaster_radius:
+                    cluster_id = -1  
+                else:
+                    nearest_fac_idx = nearest_fac_indices[idx]
+                    cluster_id = fac_to_cluster.get(nearest_fac_idx, 0)
                     
-        try:
-            communities = nx.community.louvain_communities(G_fac_net, weight="weight", seed=42)
-            fac_to_cluster = {}
-            for c_idx, com in enumerate(communities):
-                for node in com:
-                    fac_to_cluster[node] = c_idx
-        except:
-            fac_to_cluster = {i: (i % 8) for i in range(len(fac_coords_arr))}
-
-        # -------------------------------------------------------------
-        # 2. 透過 KDTree 空間對接，將真實 Louvain 成果擴散至網格面，並計算退化
-        # -------------------------------------------------------------
-        grid_centroids = gdf_grids.geometry.centroid
-        grid_coords = np.array([[c.x, c.y] for c in grid_centroids])
-        
-        # 讓每個網格尋找最近的設施，借用其 Louvain 生活圈 ID
-        _, nearest_fac_indices = fac_tree.query(grid_coords, k=1)
-        
-        disaster_pt = Point(st.session_state["twd97_x"], st.session_state["twd97_y"])
-        
-        assigned_clusters = []
-        baseline_scores = []
-        post_scores = []
-        
-        # 動態計算幾何平均基礎分數
-        eps = 0.01
-        df_scores = df_scores_calc.copy()
-        df_scores["baseline_score"] = (
-            (df_scores["醫院_Norm"] + eps) *
-            (df_scores["避難收容_Norm"] + eps) *
-            ((df_scores["五大超商_Norm"] + df_scores["量販店_Norm"] + df_scores["加油站_Norm"])/3 + eps) *
-            (df_scores["Closeness_Norm"] + eps)
-        ) ** (1/4) * 100
-        cluster_to_base_score = df_scores.set_index("cluster_id")["baseline_score"].to_dict()
-
-        for idx in range(len(gdf_grids)):
-            centroid = grid_centroids.iloc[idx]
-            dist_to_disaster = centroid.distance(disaster_pt)
-            
-            # 判定所屬生活圈
-            if dist_to_disaster <= disaster_radius:
-                cluster_id = -1  # 災害核心失能
-            else:
-                nearest_fac_idx = nearest_fac_indices[idx]
-                cluster_id = fac_to_cluster.get(nearest_fac_idx, 0)
+                base_val = cluster_to_base_score.get(cluster_id, 85.13)
                 
-            # 取得災前基礎分數
-            base_val = cluster_to_base_score.get(cluster_id, 85.13)
-            
-            if cluster_id == -1:
-                post_val = 7.92  # 核心癱瘓殘存分數
-            elif dist_to_disaster <= disaster_radius * 3.0:
-                # 半徑外圍波及區擴散扣分
-                proximity_factor = 1.0 - (dist_to_disaster - disaster_radius) / (disaster_radius * 2.0)
-                degradation = (base_val * 0.45) * proximity_factor
-                post_val = base_val - degradation
-            else:
-                post_val = base_val
+                if cluster_id == -1:
+                    post_val = 7.92  
+                elif dist_to_disaster <= disaster_radius * 3.0:
+                    proximity_factor = 1.0 - (dist_to_disaster - disaster_radius) / (disaster_radius * 2.0)
+                    degradation = (base_val * 0.45) * proximity_factor
+                    post_val = base_val - degradation
+                else:
+                    post_val = base_val
+                    
+                baseline_scores.append(base_val)
+                post_scores.append(post_val)
+                assigned_clusters.append(cluster_id)
                 
-            baseline_scores.append(base_val)
-            post_scores.append(post_val)
-            assigned_clusters.append(cluster_id)
+            df_result = pd.DataFrame({
+                "Grid_ID": gdf_grids["Grid_ID"].values,
+                "生活圈分群ID": assigned_clusters,
+                "災前_防災韌性(幾何平均)": baseline_scores,
+                "災後_防災韌性(幾何平均)": post_scores
+            })
+            df_result["最終韌性退化差值"] = df_result["災後_防災韌性(幾何平均)"] - df_result["災前_防災韌性(幾何平均)"]
+
+            st.success(f"🎉 真實 Louvain 生活圈網路對接與幾何平均降解計算完成！")
             
-        # 封裝結果 Dataframe
-        df_result = pd.DataFrame({
-            "Grid_ID": gdf_grids["Grid_ID"].values,
-            "生活圈分群ID": assigned_clusters,
-            "災前_防災韌性(幾何平均)": baseline_scores,
-            "災後_防災韌性(幾何平均)": post_scores
-        })
-        df_result["最終韌性退化差值"] = df_result["災後_防災韌性(幾何平均)"] - df_result["災前_防災韌性(幾何平均)"]
+            gdf_res_map = gdf_grids.merge(df_result, on="Grid_ID")
+            
+            # 🌐 座標轉換
+            import plotly.express as px
+            import plotly.graph_objects as go
 
-        st.success(f"🎉 真實 Louvain 生活圈網路對接與幾何平均降解計算完成！")
-        
-        # 合併地理空間圖資與結果
-        gdf_res_map = gdf_grids.merge(df_result, on="Grid_ID")
-        
-        # -------------------------------------------------------------
-        # 🌐 座標轉換與 Plotly 資料準備
-        # -------------------------------------------------------------
-        import plotly.express as px
-        import plotly.graph_objects as go
+            gdf_res_map_wgs84 = gdf_res_map.to_crs("EPSG:4326")
+            centroids_wgs84 = gdf_res_map_wgs84.geometry.centroid
+            gdf_res_map_wgs84["lon"] = centroids_wgs84.x
+            gdf_res_map_wgs84["lat"] = centroids_wgs84.y
+            
+            def label_cluster_name(cid):
+                if cid == -1: return "🚨 災害核心失能區"
+                return f"🏡 生活圈分區 {int(cid)}"
+            gdf_res_map_wgs84["生活圈名稱"] = gdf_res_map_wgs84["生活圈分群ID"].apply(label_cluster_name)
 
-        gdf_res_map_wgs84 = gdf_res_map.to_crs("EPSG:4326")
-        centroids_wgs84 = gdf_res_map_wgs84.geometry.centroid
-        gdf_res_map_wgs84["lon"] = centroids_wgs84.x
-        gdf_res_map_wgs84["lat"] = centroids_wgs84.y
-        
-        # 建立易讀的生活圈名稱
-        def label_cluster_name(cid):
-            if cid == -1: return "🚨 災害核心失能區"
-            return f"🏡 生活圈分區 {int(cid)}"
-        gdf_res_map_wgs84["生活圈名稱"] = gdf_res_map_wgs84["生活圈分群ID"].apply(label_cluster_name)
-
-        # -------------------------------------------------------------
-        # 🎨 繪製 Plotly 動態互動地圖
-        # -------------------------------------------------------------
-        fig_plotly = px.scatter(
-            gdf_res_map_wgs84, 
-            x="lon", 
-            y="lat", 
-            color="生活圈名稱",
-            title=f"<b>大台中都市防災生活圈空間退化成果圖 (真實 Louvain 網路) — 模擬半徑: {disaster_radius} 公尺</b>",
-            labels={"lon": "經度 (Longitude)", "lat": "緯度 (Latitude)"},
-            color_discrete_map={"🚨 災害核心失能區": "#d9534f"},
-            hover_data={
-                "Grid_ID": True, 
-                "災前_防災韌性(幾何平均)": ":.2f", 
-                "災後_防災韌性(幾何平均)": ":.2f", 
-                "最終韌性退化差值": ":.2f",
-                "lon": False, 
-                "lat": False, 
-                "生活圈名稱": False
-            }
-        )
-
-        # 疊加黃色大叉叉作為災害中心點
-        disaster_lon = st.session_state["last_clicked_wgs84"][1]
-        disaster_lat = st.session_state["last_clicked_wgs84"][0]
-        fig_plotly.add_trace(
-            go.Scatter(
-                x=[disaster_lon], 
-                y=[disaster_lat],
-                mode="markers",
-                marker=dict(color="yellow", size=14, symbol="x", line=dict(color="black", width=2)),
-                name="🎯 災害中心點",
-                showlegend=True
+            # 🎨 繪製 Plotly
+            fig_plotly = px.scatter(
+                gdf_res_map_wgs84, 
+                x="lon", 
+                y="lat", 
+                color="生活圈名稱",
+                title=f"<b>大台中都市防災生活圈空間退化成果圖 (真實 Louvain 網路) — 模擬半徑: {disaster_radius} 公尺</b>",
+                labels={"lon": "經度 (Longitude)", "lat": "緯度 (Latitude)"},
+                color_discrete_map={"🚨 災害核心失能區": "#d9534f"},
+                hover_data={
+                    "Grid_ID": True, 
+                    "災前_防災韌性(幾何平均)": ":.2f", 
+                    "災後_防災韌性(幾何平均)": ":.2f", 
+                    "最終韌性退化差值": ":.2f",
+                    "lon": False, 
+                    "lat": False, 
+                    "生活圈名稱": False
+                }
             )
-        )
 
-        # -------------------------------------------------------------
-        # 🟢 ⭐ 修正核心：將圖例改為橫向置底，並釋放空間讓地圖絕對居中
-        # -------------------------------------------------------------
-        fig_plotly.update_layout(
-            width=900,
-            height=850,  # 增加畫布整體高度，用來容納下方橫向排列的多組圖例
-            xaxis=dict(tickformat=".3f"),
-            yaxis=dict(tickformat=".3f"),
-            font=dict(family="Microsoft JhengHei, Arial Unicode MS, sans-serif", size=11),
-            
-            # 核心設定：控制圖例位置與橫向排列
-            legend=dict(
-                orientation="h",        # 強制指定圖例為「橫向 (Horizontal)」排列
-                yanchor="top",          # 圖例的頂部對齊定位點
-                y=-0.12,                # 將定位點下拉到地圖 X 軸下方 (負值代表軸外下方)
-                xanchor="center",       # 圖例的水平中心點對齊定位點
-                x=0.5,                  # 放在正中間 (0.5 代表畫布正中央)
-                traceorder="normal"
-            ),
-            
-            # 手動拉大畫布底部的邊距（Margin），防止橫向圖例超出版面被裁切
-            margin=dict(
-                l=50,
-                r=50,
-                t=80,
-                b=150  # 底部留出 150 像素的安全空間給生活圈標籤們
+            disaster_lon = st.session_state["last_clicked_wgs84"][1]
+            disaster_lat = st.session_state["last_clicked_wgs84"][0]
+            fig_plotly.add_trace(
+                go.Scatter(
+                    x=[disaster_lon], 
+                    y=[disaster_lat],
+                    mode="markers",
+                    marker=dict(color="yellow", size=14, symbol="x", line=dict(color="black", width=2)),
+                    name="🎯 災害中心點",
+                    showlegend=True
+                )
             )
-        )
-        
-        # 強制地理縱橫比 1:1，保證不被壓扁
-        fig_plotly.update_yaxes(scaleanchor="x", scaleratio=1) 
-        fig_plotly.update_traces(marker=dict(size=6, opacity=0.85), selector=dict(mode='markers'))
 
-        # 渲染至 Streamlit 網頁
-        st.plotly_chart(fig_plotly, use_container_width=False)
-        
-        # ==========================================
-        # 📊 呈現綜合統計表
-        # ==========================================
-        st.subheader("📊 災後防衛生活圈指標與網絡退化綜合統計表")
-        
-        df_summary = df_result.groupby("生活圈分群ID").agg(
-            包含網格數=("Grid_ID", "count"),
-            災前平均韌性=("災前_防災韌性(幾何平均)", "mean"),
-            災後平均韌性=("災後_防災韌性(幾何平均)", "mean"),
-            平均韌性退化差值=("最終韌性退化差值", "mean")
-        ).reset_index()
-        
-        df_summary["生活圈分群ID"] = df_summary["生活圈分群ID"].apply(label_cluster_name)
-        
-        st.dataframe(
-            df_summary.style.format({
-                "災前平均韌性": "{:.2f}", 
-                "災後平均韌性": "{:.2f}", 
-                "平均韌性退化差值": "{:.2f}"
-            }), 
-            use_container_width=True
-        )
+            # ⚙️ 佈局優化 (橫向置底與完美置中)
+            fig_plotly.update_layout(
+                width=900,
+                height=850,  
+                xaxis=dict(tickformat=".3f"),
+                yaxis=dict(tickformat=".3f"),
+                font=dict(family="Microsoft JhengHei, Arial Unicode MS, sans-serif", size=11),
+                legend=dict(
+                    orientation="h",        
+                    yanchor="top",          
+                    y=-0.12,                
+                    xanchor="center",       
+                    x=0.5,                  
+                    traceorder="normal"
+                ),
+                margin=dict(l=50, r=50, t=80, b=150)
+            )
+            
+            fig_plotly.update_yaxes(scaleanchor="x", scaleratio=1) 
+            fig_plotly.update_traces(marker=dict(size=6, opacity=0.85), selector=dict(mode='markers'))
+
+            st.plotly_chart(fig_plotly, use_container_width=False)
+            
+            # 📊 呈現綜合統計表
+            st.subheader("📊 災後防衛生活圈指標與網絡退化綜合統計表")
+            
+            df_summary = df_result.groupby("生活圈分群ID").agg(
+                包含網格數=("Grid_ID", "count"),
+                災前平均韌性=("災前_防災韌性(幾何平均)", "mean"),
+                災後平均韌性=("災後_防災韌性(幾何平均)", "mean"),
+                平均韌性退化差值=("最終韌性退化差值", "mean")
+            ).reset_index()
+            
+            df_summary["生活圈分群ID"] = df_summary["生活圈分群ID"].apply(label_cluster_name)
+            
+            st.dataframe(
+                df_summary.style.format({
+                    "災前平均韌性": "{:.2f}", 
+                    "災後平均韌性": "{:.2f}", 
+                    "平均韌性退化差值": "{:.2f}"
+                }), 
+                use_container_width=True
+            )
