@@ -379,7 +379,7 @@ if st.button("🔥 執行單次空間失能評估", key="fixed_louvain_plot"):
             return f"🏡 生活圈分區 {int(cid)}"
         gdf_res_map_wgs84["生活圈名稱"] = gdf_res_map_wgs84["生活圈分群ID"].apply(label_cluster_name)
 
-        # -------------------------------------------------------------
+       # -------------------------------------------------------------
         # 🎨 繪製 Plotly 動態互動地圖 (完整補齊欄位)
         # -------------------------------------------------------------
         fig_plotly = px.scatter(
@@ -390,4 +390,77 @@ if st.button("🔥 執行單次空間失能評估", key="fixed_louvain_plot"):
             title=f"大台中都市防災生活圈空間退化成果圖 (真實 Louvain 網路) — 模擬半徑: {disaster_radius} 公尺",
             labels={"lon": "經度 (Longitude)", "lat": "緯度 (Latitude)"},
             color_discrete_map={"🚨 災害核心失能區": "#d9534f"},
-            hover_data
+            hover_data={
+                "Grid_ID": True, 
+                "災前_防災韌性(幾何平均)": ":.2f", 
+                "災後_防災韌性(幾幾何平均)": ":.2f", 
+                "最終韌性退化差值": ":.2f",
+                "lon": False, 
+                "lat": False, 
+                "生活圈名稱": False
+            }
+        )
+
+        # 疊加黃色大叉叉作為災害中心點
+        disaster_lon = st.session_state["last_clicked_wgs84"][1]
+        disaster_lat = st.session_state["last_clicked_wgs84"][0]
+        fig_plotly.add_trace(
+            go.Scatter(
+                x=[disaster_lon], 
+                y=[disaster_lat],
+                mode="markers",
+                marker=dict(color="yellow", size=14, symbol="x", line=dict(color="black", width=2)),
+                name="🎯 災害中心點",
+                showlegend=True
+            )
+        )
+
+        # -------------------------------------------------------------
+        # 🟢 優化畫布外觀：圖例橫向置底，並鎖定 1:1 地理比例
+        # -------------------------------------------------------------
+        fig_plotly.update_layout(
+            width=900,
+            height=750,
+            xaxis=dict(tickformat=".3f"),
+            yaxis=dict(tickformat=".3f"),
+            font=dict(family="Microsoft JhengHei, Arial Unicode MS, sans-serif", size=11),
+            title=dict(font=dict(size=14, fontweight='bold'), x=0.02),
+            
+            legend=dict(
+                orientation="h",
+                yanchor="top",
+                y=-0.12,
+                xanchor="center",
+                x=0.5,
+                title_text="🗺️ 圖例項目"
+            )
+        )
+        
+        fig_plotly.update_yaxes(scaleanchor="x", scaleratio=1) 
+        fig_plotly.update_traces(marker=dict(size=6, opacity=0.85), selector=dict(mode='markers'))
+
+        # 渲染至 Streamlit 網頁
+        st.plotly_chart(fig_plotly, use_container_width=False)
+        
+        # ==========================================
+        # 📊 呈現綜合統計表
+        # ==========================================
+        st.subheader("📊 災後防衛生活圈指標與網絡退化綜合統計表")
+        
+        df_summary = df_result.groupby("生活圈分群ID").agg(
+            包含網格數=("Grid_ID", "count"),
+            災前平均韌性=("災前_防災韌性(幾何平均)", "mean"),
+            災後平均韌性=("災後_防災韌性(幾幾何平均)", "mean"),
+            平均韌性退化差值=("最終韌性退化差值", "mean")
+        ).reset_index()
+        
+        df_summary["生活圈分群ID"] = df_summary["生活圈分群ID"].apply(label_cluster_name)
+        
+        st.dataframe(
+            df_summary.style.format({
+                "災前平均韌性": "{:.2f}", 
+                "災後平均韌性": "{:.2f}", 
+                "平均韌性退化差值": "{:.2f}"
+            }), 
+            use_container_width=True
+        )
