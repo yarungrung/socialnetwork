@@ -263,7 +263,7 @@ def calculate_disaster_resilience_degradation(
     return df_bind
 
 # ==========================================
-# 🏃‍♂️ 執行與結果繪製 (修正 Layout ValueError 穩定版)
+# 🏃‍♂️ 執行與結果繪製 (極簡穩定安全版 Layout)
 # ==========================================
 st.markdown("---")
 st.subheader("🏁 第二步：啟動生活圈分群模擬與指標計算")
@@ -415,27 +415,18 @@ if st.button("🔥 執行單次空間失能評估", key="fixed_louvain_plot"):
         )
 
         # -------------------------------------------------------------
-        # 🟢 ⭐ 修正核心：標準安全版 Layout 更新 (避免內層解析報錯)
+        # 🟢 ⭐ 修正核心：移除了會報錯的內層 legend 字典，改用最安全的原生設定
         # -------------------------------------------------------------
         fig_plotly.update_layout(
             width=900,
-            height=750,
+            height=650,
             xaxis=dict(tickformat=".3f"),
             yaxis=dict(tickformat=".3f"),
             font=dict(family="Microsoft JhengHei, Arial Unicode MS, sans-serif", size=11),
-            title=dict(font=dict(size=14, fontweight='bold'), x=0.02),
-            
-            # 使用安全標準格式：把標題文字移出，直接設定 orientation
-            legend=dict(
-                orientation="h",
-                yanchor="top",
-                y=-0.12,
-                xanchor="center",
-                x=0.5
-            )
+            title=dict(font=dict(size=14, fontweight='bold'), x=0.02)
         )
         
-        # 鎖定 1:1 地理縱橫比例，防止地圖比例尺被擠壓變形
+        # 🟢 強制地理軸為 1:1 長寬比，這一步可以防止地圖幾何被壓扁、保持真實地理比例尺
         fig_plotly.update_yaxes(scaleanchor="x", scaleratio=1) 
         fig_plotly.update_traces(marker=dict(size=6, opacity=0.85), selector=dict(mode='markers'))
 
