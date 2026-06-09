@@ -426,8 +426,81 @@ else:
             fig_plotly.update_traces(marker=dict(size=7, opacity=0.9), selector=dict(mode='markers'))
 
             st.plotly_chart(fig_plotly, use_container_width=False)
+
             
             # ==============================================================================
+            # 🟥⬜🟩 韌性變化網格填色圖（災後－災前）
+            # ==============================================================================
+            st.subheader("🟥⬜🟩 韌性變化網格填色圖（災後網格 - 災前網格）")
+
+            from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm
+
+            gdf_change = gdf_res_map.copy()
+
+            valid_scores = (
+                gdf_change["最終韌性退化差值"]
+                .replace([np.inf, -np.inf], np.nan)
+                .dropna()
+            )
+
+            vmin = min(valid_scores.min(), -0.01)
+            vmax = max(valid_scores.max(), 0.01)
+
+            cmap_rwg = LinearSegmentedColormap.from_list(
+                "RdGyGn",
+                ["#b2182b", "#E8E8E8", "#1a9850"]
+            )
+
+            norm = TwoSlopeNorm(
+                vcenter=0.0,
+                vmin=vmin,
+                vmax=vmax
+            )
+
+            fig_resilience, ax = plt.subplots(figsize=(16, 14))
+
+            ax.set_title(
+                f"臺中市防災韌性變化圖\n"
+                f"Final Score = 災後網格分數 - 災前網格分數；失能半徑 {disaster_radius} 公尺",
+                fontsize=14,
+                fontweight="bold"
+            )
+
+            gdf_change.plot(
+                column="最終韌性退化差值",
+                cmap=cmap_rwg,
+                norm=norm,
+                ax=ax,
+                edgecolor="none",
+                alpha=0.88,
+                legend=True,
+                legend_kwds={
+                    "label": "韌性變化分數\n(災後 - 災前)",
+                    "shrink": 0.75
+                }
+            )
+
+            if "twd97_x" in st.session_state:
+                ax.scatter(
+                    st.session_state["twd97_x"],
+                    st.session_state["twd97_y"],
+                    s=220,
+                    c="yellow",
+                    edgecolors="black",
+                    marker="x",
+                    linewidths=3,
+                    zorder=10
+                )
+
+            ax.grid(True, linestyle="--", alpha=0.15)
+            ax.set_xlabel("TWD97 X 座標 (公尺)")
+            ax.set_ylabel("TWD97 Y 座標 (公尺)")
+
+            plt.tight_layout()
+            st.pyplot(fig_resilience)
+            plt.close(fig_resilience)
+
+# ==============================================================================
             # 📊 綜合統計表模組
             # ==============================================================================
             st.subheader("📊 災後防衛生活圈指標與網絡退化綜合統計表")
@@ -455,3 +528,4 @@ else:
                 }), 
                 use_container_width=True
             )
+            
