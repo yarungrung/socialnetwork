@@ -263,7 +263,7 @@ def calculate_disaster_resilience_degradation(
     return df_bind
 
 # ==========================================
-# 🏃‍♂️ 執行與結果繪製 (極簡穩定安全版 Layout)
+# 🏃‍♂️ 執行與結果繪製 (徹底修正 fontweight 報錯穩定版)
 # ==========================================
 st.markdown("---")
 st.subheader("🏁 第二步：啟動生活圈分群模擬與指標計算")
@@ -354,7 +354,7 @@ if st.button("🔥 執行單次空間失能評估", key="fixed_louvain_plot"):
             "災前_防災韌性(幾何平均)": baseline_scores,
             "災後_防災韌性(幾幾何平均)": post_scores
         })
-        df_result["最終韌性退化差值"] = df_result["災後_防災韌性(幾幾何平均)"] - df_result["災前_防災韌性(幾何平均)"]
+        df_result["最終韌性退化差值"] = df_result["災後_防災韌性(幾幾何平均)"] - df_result["災前_防災韌性(幾幾何平均)"]
 
         st.success(f"🎉 真實 Louvain 生活圈網路對接與幾何平均降解計算完成！")
         
@@ -379,14 +379,14 @@ if st.button("🔥 執行單次空間失能評估", key="fixed_louvain_plot"):
         gdf_res_map_wgs84["生活圈名稱"] = gdf_res_map_wgs84["生活圈分群ID"].apply(label_cluster_name)
 
         # -------------------------------------------------------------
-        # 🎨 繪製 Plotly 動態互動地圖
+        # 🎨 繪製 Plotly 動態互動地圖 (標題粗體直接用 HTML <b> 標籤解決)
         # -------------------------------------------------------------
         fig_plotly = px.scatter(
             gdf_res_map_wgs84, 
             x="lon", 
             y="lat", 
             color="生活圈名稱",
-            title=f"大台中都市防災生活圈空間退化成果圖 (真實 Louvain 網路) — 模擬半徑: {disaster_radius} 公尺",
+            title=f"<b>大台中都市防災生活圈空間退化成果圖 (真實 Louvain 網路) — 模擬半徑: {disaster_radius} 公尺</b>",
             labels={"lon": "經度 (Longitude)", "lat": "緯度 (Latitude)"},
             color_discrete_map={"🚨 災害核心失能區": "#d9534f"},
             hover_data={
@@ -415,22 +415,21 @@ if st.button("🔥 執行單次空間失能評估", key="fixed_louvain_plot"):
         )
 
         # -------------------------------------------------------------
-        # 🟢 ⭐ 修正核心：移除了會報錯的內層 legend 字典，改用最安全的原生設定
+        # 🟢 ⭐ 修正核心：極簡無害版外觀優化，徹底排除不相容字典欄位
         # -------------------------------------------------------------
         fig_plotly.update_layout(
             width=900,
             height=650,
             xaxis=dict(tickformat=".3f"),
             yaxis=dict(tickformat=".3f"),
-            font=dict(family="Microsoft JhengHei, Arial Unicode MS, sans-serif", size=11),
-            title=dict(font=dict(size=14, fontweight='bold'), x=0.02)
+            font=dict(family="Microsoft JhengHei, Arial Unicode MS, sans-serif", size=11)
         )
         
-        # 🟢 強制地理軸為 1:1 長寬比，這一步可以防止地圖幾何被壓扁、保持真實地理比例尺
+        # 🟢 強制地理縱橫比 1:1，這是避免大台中地圖比例尺被擠壓、保持真實地理形狀的唯一解
         fig_plotly.update_yaxes(scaleanchor="x", scaleratio=1) 
         fig_plotly.update_traces(marker=dict(size=6, opacity=0.85), selector=dict(mode='markers'))
 
-        # 渲染至 Streamlit 網頁
+        # 渲染至 Streamlit 網頁 (use_container_width 設為 False 鎖定我們設定的 900 寬度)
         st.plotly_chart(fig_plotly, use_container_width=False)
         
         # ==========================================
