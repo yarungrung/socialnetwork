@@ -263,12 +263,11 @@ def calculate_disaster_resilience_degradation(
     return df_bind
 
 # ==========================================
-# 🏃‍♂️ 執行與結果繪製 (加上 key 防止元件 ID 重複當機)
+# 🏃‍♂️ 執行與結果繪製 (修正 Layout ValueError 穩定版)
 # ==========================================
 st.markdown("---")
 st.subheader("🏁 第二步：啟動生活圈分群模擬與指標計算")
 
-# 🟢 修正核心：加上 key="fixed_louvain_plot" 徹底解決 StreamlitDuplicateElementId 錯誤
 if st.button("🔥 執行單次空間失能評估", key="fixed_louvain_plot"):
     with st.spinner(f"⏳ 正在調用 Louvain 社群網路模組，為大台中進行空間裂解分群..."):
         
@@ -380,7 +379,7 @@ if st.button("🔥 執行單次空間失能評估", key="fixed_louvain_plot"):
         gdf_res_map_wgs84["生活圈名稱"] = gdf_res_map_wgs84["生活圈分群ID"].apply(label_cluster_name)
 
         # -------------------------------------------------------------
-        # 🎨 繪製 Plotly 動態互動地圖 (完整補齊欄位)
+        # 🎨 繪製 Plotly 動態互動地圖
         # -------------------------------------------------------------
         fig_plotly = px.scatter(
             gdf_res_map_wgs84, 
@@ -416,7 +415,7 @@ if st.button("🔥 執行單次空間失能評估", key="fixed_louvain_plot"):
         )
 
         # -------------------------------------------------------------
-        # 🟢 優化畫布外觀：圖例橫向置底，並鎖定 1:1 地理比例
+        # 🟢 ⭐ 修正核心：標準安全版 Layout 更新 (避免內層解析報錯)
         # -------------------------------------------------------------
         fig_plotly.update_layout(
             width=900,
@@ -426,16 +425,17 @@ if st.button("🔥 執行單次空間失能評估", key="fixed_louvain_plot"):
             font=dict(family="Microsoft JhengHei, Arial Unicode MS, sans-serif", size=11),
             title=dict(font=dict(size=14, fontweight='bold'), x=0.02),
             
+            # 使用安全標準格式：把標題文字移出，直接設定 orientation
             legend=dict(
                 orientation="h",
                 yanchor="top",
                 y=-0.12,
                 xanchor="center",
-                x=0.5,
-                title_text="🗺️ 圖例項目"
+                x=0.5
             )
         )
         
+        # 鎖定 1:1 地理縱橫比例，防止地圖比例尺被擠壓變形
         fig_plotly.update_yaxes(scaleanchor="x", scaleratio=1) 
         fig_plotly.update_traces(marker=dict(size=6, opacity=0.85), selector=dict(mode='markers'))
 
