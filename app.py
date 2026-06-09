@@ -341,25 +341,24 @@ else:
             gdf_res_map_wgs84["lon"] = centroids_wgs84.x
             gdf_res_map_wgs84["lat"] = centroids_wgs84.y
             
-            # 建立易讀名稱，並在此處格式化以便排序
+            # 使用補零格式化字串（如 00, 01, 02）以確保文字排序完美依序
             def label_cluster_name(cid):
                 if cid == -1: return "🚨 災害核心失能區"
-                return f"🏡 Louvain 生活圈分區 {int(cid):02d}"  # 補零（如分區 02）確保圖例能依英文字母與數字完美排序
+                return f"🏡 Louvain 生活圈分區 {int(cid):02d}"
                 
             gdf_res_map_wgs84["生活圈名稱"] = gdf_res_map_wgs84["生活圈分群ID"].apply(label_cluster_name)
 
-            # 🔥 排序資料流：確保「災害核心區」必定在最前，其餘依分區數字從小到大排序，圖例順序才會完美
-            gdf_res_map_wgs84 = gdf_res_map_wgs84.sort_values(by=["生活圈分群ID"], ascending=[True])
+            # 🔥 強制依「生活圈分群ID」對整份製圖 DataFrame 做遞增排序，讓失能區(-1)排在最前面
+            gdf_res_map_wgs84 = gdf_res_map_wgs84.sort_values(by=["生活圈分群ID"], ascending=[True]).reset_index(drop=True)
+            unique_ordered_clusters = gdf_res_map_wgs84["生活圈名稱"].unique()
 
-            # 指定特定顏色地圖，確保災害核心失能區呈現絕對高亮的「深亮紅」
-            unique_clusters = gdf_res_map_wgs84["生活圈名稱"].unique()
+            # 設定色彩盤映射，確保失能區呈現鮮豔搶眼的深紅色
             color_map = {}
-            # 使用內建調色盤，為每個分區分配和諧的色彩
             colors_pool = px.colors.qualitative.Alphabet + px.colors.qualitative.Dark24
             color_idx = 0
-            for uc in unique_clusters:
+            for uc in unique_ordered_clusters:
                 if uc == "🚨 災害核心失能區":
-                    color_map[uc] = "#e74c3c"  # 搶眼正紅色
+                    color_map[uc] = "#e74c3c"  
                 else:
                     color_map[uc] = colors_pool[color_idx % len(colors_pool)]
                     color_idx += 1
@@ -372,7 +371,7 @@ else:
                 title=f"<b>大台中都市防災生活圈空間退化成果圖 (真實 Louvain 網路) — 模擬半徑: {disaster_radius} 公尺</b>",
                 labels={"lon": "經度 (Longitude)", "lat": "緯度 (Latitude)"},
                 color_discrete_map=color_map,
-                category_orders={"生活圈名稱": list(unique_clusters)}, # 強制限制圖例顯示排序
+                category_orders={"生活圈名稱": list(unique_ordered_clusters)}, # 強制圖例面板遵循此順序顯示
                 hover_data={
                     "Grid_ID": True, 
                     "災前_防災韌性(幾何平均)": ":.2f", 
@@ -384,49 +383,52 @@ else:
                 }
             )
 
-            # 🔥 加大加粗高亮「🎯 災害中心點」標記，徹底解決看不見的問題！
-            disaster_lon = st.session_state["last_clicked_wgs84"][1]
-            disaster_lat = st.session_state["last_clicked_wgs84"][0]
-            fig_plotly.add_trace(
-                go.Scatter(
-                    x=[disaster_lon], 
-                    y=[disaster_lat],
-                    mode="markers",
-                    marker=dict(
-                        color="#f1c40f",       # 閃亮皇家黃金黃
-                        size=18,               # 顯眼超大號尺寸
-                        symbol="x-dot",        # 帶有核心錨點的交叉記號
-                        line=dict(color="#2c3e50", width=3) # 加粗深色外框線
-                    ),
-                    name="🎯 災害模擬中心點",
-                    showlegend=True
+            # 🔥 【核心修復】從 st.session_state 提取最精準穩定的點擊座標，疊加黃金交叉記號
+            if "last_clicked_wgs84" in st.session_state and st.session_state["last_clicked_wgs84"] is not None:
+                disaster_lat_val = st.session_state["last_clicked_wgs84"][0]
+                disaster_lon_val = st.session_state["last_clicked_wgs84"][1]
+                
+                fig_plotly.add_trace(
+                    go.Scatter(
+                        x=[disaster_lon_val], 
+                        y=[disaster_lat_val],
+                        mode="markers",
+                        marker=dict(
+                            color="#f1c40f",       # 明亮皇家黃
+                            size=20,               # 再度放大尺寸至 20
+                            symbol="x-dot",        # 交叉帶圓點複合記號
+                            line=dict(color="#1a252f", width=3.5) # 超粗深色對比邊框
+                        ),
+                        name="🎯 災害模擬中心點",
+                        showlegend=True
+                    )
                 )
-            )
 
+            # 🔥 【圖例強制靠底】優化 Layout，限制圖例不准去右邊
             fig_plotly.update_layout(
-                width=950,
-                height=850,  
+                width=1000,
+                height=950,  
                 xaxis=dict(tickformat=".3f"),
                 yaxis=dict(tickformat=".3f"),
                 font=dict(family="Microsoft JhengHei, Arial Unicode MS, sans-serif", size=11),
                 legend=dict(
-                    orientation="v",        # 改回垂直排列，右側能看清所有排序分區
+                    orientation="h",        # 🔥 強制改為水平橫向排列
                     yanchor="top",          
-                    y=1.0,                
-                    xanchor="left",       
-                    x=1.02,                  
+                    y=-0.15,                # 🔥 移到地圖下方（負值）
+                    xanchor="center",       
+                    x=0.5,                  
                     traceorder="normal"
                 ),
-                margin=dict(l=50, r=200, t=80, b=80)
+                margin=dict(l=50, r=50, t=80, b=220) # 擴大下方邊距，留空間給橫排圖例
             )
             
             fig_plotly.update_yaxes(scaleanchor="x", scaleratio=1) 
-            fig_plotly.update_traces(marker=dict(size=6, opacity=0.9), selector=dict(mode='markers'))
+            fig_plotly.update_traces(marker=dict(size=7, opacity=0.9), selector=dict(mode='markers'))
 
             st.plotly_chart(fig_plotly, use_container_width=False)
             
             # ==============================================================================
-            # 📊 更新後的統計表模組：受災最重排最前，其餘依 ID 遞增排
+            # 📊 綜合統計表模組
             # ==============================================================================
             st.subheader("📊 災後防衛生活圈指標與網絡退化綜合統計表")
             
@@ -437,13 +439,12 @@ else:
                 平均韌性退化差值=("最終韌性退化差值", "mean")
             ).reset_index()
             
-            # 排序：災損最重（負數最大，如 -77）排最上面，剩餘沒受災（差值為 0）的依生活圈 ID 遞增排序
+            # 優先以退化差值排序（慘的在上面），若相同則依生活圈 ID 排序
             df_summary = df_summary.sort_values(
                 by=["平均韌性退化差值", "生活圈分群ID"], 
                 ascending=[True, True]
             ).reset_index(drop=True)
             
-            # 轉換為格式化名稱標籤
             df_summary["生活圈分群ID"] = df_summary["生活圈分群ID"].apply(label_cluster_name)
             
             st.dataframe(
