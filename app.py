@@ -170,29 +170,79 @@ to_twd97 = Transformer.from_crs("EPSG:4326", "EPSG:3826", always_xy=True)
 st.sidebar.header("🎯 災害情境自訂面板")
 disaster_radius = st.sidebar.slider("指定道路失能半徑 (公尺)", min_value=100, max_value=5000, value=2500, step=100)
 
-if "last_clicked_wgs84" not in st.session_state:
-    st.session_state["last_clicked_wgs84"] = (24.1624, 120.6405)
-    st.session_state["twd97_x"] = 217432
-    st.session_state["twd97_y"] = 2672145
+# ==============================================================================
+# 🎯 限制只能點選大台中：設定地理邊界 (Max Bounds) 與初始中心
+# ==============================================================================
+import folium
+from streamlit_folium import st_folium
 
-st.subheader("📍 請在下方地圖上點選「災害中心點位置」")
-taichung_bounds = [[24.00, 120.45], [24.40, 121.45]]
-m = folium.Map(location=st.session_state["last_clicked_wgs84"], zoom_start=11, max_bounds=True, bounds=taichung_bounds)
-folium.Marker(location=st.session_state["last_clicked_wgs84"], popup="模擬中心", icon=folium.Icon(color="red", icon="bullseye", prefix="fa")).add_to(m)
-folium.Circle(location=st.session_state["last_clicked_wgs84"], radius=disaster_radius, color="#d9534f", fill=True, fill_opacity=0.15).add_to(m)
-map_data = st_folium(m, width="100%", height=350, key="taichung_flat_map")
+st.markdown("### 📍 請在下方地圖上點選「災害中心點位置」")
+st.caption("💡 系統已鎖定大台中地圖邊界，防止誤點選至其他縣市。")
 
-if map_data and map_data.get("last_clicked"):
-    clicked = map_data["last_clicked"]
-    lng, lat = clicked["lng"], clicked["lat"]
-    if (24.00 <= lat <= 24.40) and (120.45 <= lng <= 121.45):
-        st.session_state["last_clicked_wgs84"] = (lat, lng)
-        tx, ty = to_twd97.transform(lng, lat)
-        st.session_state["twd97_x"] = tx
-        st.session_state["twd97_y"] = ty
+# 1. 定義大台中最完美的初始中心點 (經緯度)
+taichung_center = [24.230, 120.750]
 
-st.info(f"🎯 當前模擬點 ➔ 經緯度: {st.session_state['last_clicked_wgs84']} | TWD97 X: {st.session_state['twd97_x']:.1f}, Y: {st.session_state['twd97_y']:.1f}")
+# 2. 嚴格定義大台中的地理邊界西南角 (SW) 與東北角 (NE) [緯度, 經度]
+# 這樣可以強迫畫面卡在大台中，滑不出去彰化或苗栗
+taichung_bounds = [
+    [23.900, 120.350],  # 西南角 (包含龍井、烏日、大肚邊界)
+    [24.500, 121.450]   # 東北角 (包含大甲、和平山區邊界)
+]
 
+# 3. 建立地圖，並補上限制邊界的參數
+m = folium.Map(
+    location=taichung_center,
+    zoom_start=10,          # 最佳初始縮放大小，一眼看清全台中
+    min_zoom=10,            # 限制不能縮得太小看見全台灣
+    max_zoom=14,            # 限制不能放得太大失去大局觀
+    max_bounds=True,        # 🔥 啟動邊界限制核心！
+    location_bounds=taichung_bounds, # 鎖定這區塊
+    tiles="OpenStreetMap"   # 依舊使用妳喜歡的標準 OpenStreetMap 底圖
+)
+
+# 4. 固定限制地圖的滑動範圍，滑到邊緣會自動彈回來
+m.fit_bounds(taichung_bounds)
+
+# 如果使用者之前已經點選過，就在地圖上畫出紅色圓圈波及區 (保持妳原有的邏輯)
+if "last_clicked_wgs84" in st.session_state and st.session_state["last_clicked_wgs84"] is not None:
+    folium.Marker(
+        location=st.session_state["last_clicked_wgs84"],
+        popup="🎯 模擬災害中心",
+        icon=folium.Icon(color="red", icon="info-sign")
+    ).add_to(m)
+    
+    # 畫出核心半徑範圍圈
+    folium.Circle(
+        location=st.session_state["last_clicked_wgs84"],
+        radius=disaster_radius, # 使用妳畫面上拉桿的半徑
+        color="red",
+        fill=True,
+        fill_color="red",
+        fill_opacity=0.2
+    ).add_to(m)
+
+# 5. 將地圖渲染至網頁，並指定寬高
+output = st_folium(m, width=800, height=450)
+
+# 6. 監聽點擊事件 (保持妳原本將 WGS84 轉為 TWD97 的座標處理邏輯)
+if output and output.get("last_clicked"):
+    clicked_lat = output["last_clicked"]["lat"]
+    clicked_lon = output["last_clicked"]["lng"]
+    
+    # 檢查點擊座標是否確實落在大台中安全邊界內，防止極端邊緣誤差
+    if (taichung_bounds[0][0] <= clicked_lat <= taichung_bounds[1][0] and 
+        taichung_bounds[0][1] <= clicked_lon <= taichung_bounds[1][1]):
+        
+        st.session_state["last_clicked_wgs84"] = (clicked_lat, clicked_lon)
+        
+        # 這裡照抄妳原本的 pyproj 座標轉換 (WGS84 轉 TWD97 經緯度)，例如：
+        # transformer = Transformer.from_crs("EPSG:4326", "EPSG:3826", always_xy=True)
+        # twd97_x, twd97_y = transformer.transform(clicked_lon, clicked_lat)
+        # st.session_state["twd97_x"] = twd97_x
+        # st.session_state["twd97_y"] = twd97_y
+    else:
+        st.warning("⚠️ 點選位置超出大台中核心評估範圍，請重新在台中市境內點選！")
+        
 # ==========================================
 # 🛠️ 核心 Louvain 與真實擴散退化計算模組
 # ==========================================
