@@ -263,7 +263,7 @@ def calculate_disaster_resilience_degradation(
     return df_bind
 
 # ==========================================
-# 🏃‍♂️ 執行與結果繪製 (徹底修正 fontweight 報錯穩定版)
+# 🏃‍♂️ 執行與結果繪製 (徹底修正 Typo KeyError 欄位錯字版)
 # ==========================================
 st.markdown("---")
 st.subheader("🏁 第二步：啟動生活圈分群模擬與指標計算")
@@ -347,14 +347,15 @@ if st.button("🔥 執行單次空間失能評估", key="fixed_louvain_plot"):
             post_scores.append(post_val)
             assigned_clusters.append(cluster_id)
             
-        # 封裝結果 Dataframe
+        # 🟢 修正核心：統一欄位字串命名，徹底拔除多打的「幾」字
         df_result = pd.DataFrame({
             "Grid_ID": gdf_grids["Grid_ID"].values,
             "生活圈分群ID": assigned_clusters,
             "災前_防災韌性(幾何平均)": baseline_scores,
-            "災後_防災韌性(幾幾何平均)": post_scores
+            "災後_防災韌性(幾何平均)": post_scores
         })
-        df_result["最終韌性退化差值"] = df_result["災後_防災韌性(幾幾何平均)"] - df_result["災前_防災韌性(幾幾何平均)"]
+        # 這裡欄位字串現在 100% 對接，不會再觸發 KeyError
+        df_result["最終韌性退化差值"] = df_result["災後_防災韌性(幾何平均)"] - df_result["災前_防災韌性(幾何平均)"]
 
         st.success(f"🎉 真實 Louvain 生活圈網路對接與幾何平均降解計算完成！")
         
@@ -379,7 +380,7 @@ if st.button("🔥 執行單次空間失能評估", key="fixed_louvain_plot"):
         gdf_res_map_wgs84["生活圈名稱"] = gdf_res_map_wgs84["生活圈分群ID"].apply(label_cluster_name)
 
         # -------------------------------------------------------------
-        # 🎨 繪製 Plotly 動態互動地圖 (標題粗體直接用 HTML <b> 標籤解決)
+        # 🎨 繪製 Plotly 動態互動地圖
         # -------------------------------------------------------------
         fig_plotly = px.scatter(
             gdf_res_map_wgs84, 
@@ -392,7 +393,7 @@ if st.button("🔥 執行單次空間失能評估", key="fixed_louvain_plot"):
             hover_data={
                 "Grid_ID": True, 
                 "災前_防災韌性(幾何平均)": ":.2f", 
-                "災後_防災韌性(幾幾何平均)": ":.2f", 
+                "災後_防災韌性(幾何平均)": ":.2f", 
                 "最終韌性退化差值": ":.2f",
                 "lon": False, 
                 "lat": False, 
@@ -414,9 +415,7 @@ if st.button("🔥 執行單次空間失能評估", key="fixed_louvain_plot"):
             )
         )
 
-        # -------------------------------------------------------------
-        # 🟢 ⭐ 修正核心：極簡無害版外觀優化，徹底排除不相容字典欄位
-        # -------------------------------------------------------------
+        # 外觀優化，強制地理縱橫比 1:1，防止地圖比例尺變形
         fig_plotly.update_layout(
             width=900,
             height=650,
@@ -425,11 +424,10 @@ if st.button("🔥 執行單次空間失能評估", key="fixed_louvain_plot"):
             font=dict(family="Microsoft JhengHei, Arial Unicode MS, sans-serif", size=11)
         )
         
-        # 🟢 強制地理縱橫比 1:1，這是避免大台中地圖比例尺被擠壓、保持真實地理形狀的唯一解
         fig_plotly.update_yaxes(scaleanchor="x", scaleratio=1) 
         fig_plotly.update_traces(marker=dict(size=6, opacity=0.85), selector=dict(mode='markers'))
 
-        # 渲染至 Streamlit 網頁 (use_container_width 設為 False 鎖定我們設定的 900 寬度)
+        # 渲染至 Streamlit 網頁
         st.plotly_chart(fig_plotly, use_container_width=False)
         
         # ==========================================
@@ -440,7 +438,7 @@ if st.button("🔥 執行單次空間失能評估", key="fixed_louvain_plot"):
         df_summary = df_result.groupby("生活圈分群ID").agg(
             包含網格數=("Grid_ID", "count"),
             災前平均韌性=("災前_防災韌性(幾何平均)", "mean"),
-            災後平均韌性=("災後_防災韌性(幾幾何平均)", "mean"),
+            災後平均韌性=("災後_防災韌性(幾何平均)", "mean"),
             平均韌性退化差值=("最終韌性退化差值", "mean")
         ).reset_index()
         
