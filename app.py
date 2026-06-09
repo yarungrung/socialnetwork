@@ -15,17 +15,6 @@ import matplotlib.pyplot as plt
 
 # ==========================================
 # 🔤 遠端載入中文字體 (徹底解決 Streamlit Cloud 豆腐塊方格問題)
-這真的太頑固了！通常代表 Streamlit Cloud 的環境（Linux）在快取或系統字體管理（fontconfig）機制上，忽略了我們剛剛動態加進去的 .otf 檔案，導致 Matplotlib 在最終渲染圖片時仍然找不到對應的字形拓樸，繼續給我們噴出豆腐塊方格。
-
-別氣餒，我們改用 Matplotlib 最底層、最暴力也絕對不會被系統忽略 的招式：直接在畫地圖的指令裡，手動塞入一個 fontmanager.FontProperties 物件。
-
-這個方法跳過了系統註冊機制，直接在繪圖（如 set_title, set_xlabel）的當下指定字體路徑，通常是解開 Streamlit 豆腐塊的終極大絕。
-
-🛠️ 兩步驟終極大修正
-第一步：修改程式碼最上方（載入字體的函式）
-我們讓 load_chinese_font() 改為直接回傳字體屬性物件（FontProperties）。請把最上方的字體設定區塊改為這樣：
-
-Python
 import matplotlib.font_manager as fm
 import urllib.request
 
