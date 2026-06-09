@@ -438,23 +438,23 @@ else:
             pre_col = [c for c in df_result.columns if "災前" in c or "baseline" in c][0]
             post_col = [c for c in df_result.columns if "災後" in c or "post" in c][0]
 
-            # 2. 安全地進行聚合計算
-            df_summary = df_result.groupby("生活圈分群ID").agg(
-                涵蓋空間網格數=(grid_col, "count"),
-                災前平均韌性=(pre_col, "mean"),
-                災後平均韌性=(post_col, "mean"),
-                平均韌性退化差值=(diff_col, "mean")
-            ).reset_index()
+            # 1. 檢查 target_cluster_id 是否存在於目前的記憶體中，如果不存在則給予預設值 None
+            if "target_cluster_id" not in locals() and "target_cluster_id" not in globals():
+                target_cluster_id = None
 
-            # 3. 重新建立好讀的名稱
-            df_summary["防衛生活圈名稱"] = [
-                f"🏡 真實生活圈 {int(cid)}" if cid != target_cluster_id else f"🚨 真實生活圈 {int(cid)} (受災核心)" 
-                for cid in df_summary["生活圈分群ID"]
-            ]
+# 2. 用安全的 if-else 邏輯來產生生活圈名稱
+            def get_cluster_name(cid):
+                if target_cluster_id is not None and cid == target_cluster_id:
+                    return f"🚨 真實生活圈 {int(cid)} (受災核心)"
+                else:
+                    return f"🏡 真實生活圈 {int(cid)}"
 
-            # 調整欄位順序美化輸出
+# 3. 套用至資料表
+            df_summary["防衛生活圈名稱"] = df_summary["生活圈分群ID"].apply(get_cluster_name)
+
+# 調整欄位順序美化輸出
             columns_order = ["防衛生活圈名稱", "涵蓋空間網格數", "災前平均韌性", "災後平均韌性", "平均韌性退化差值"]
-            st.dataframe(df_summary[columns_order])
+            st.dataframe(df_summary[columns_order], use_container_width=True)
             
             #df_summary = df_result.groupby("生活圈分群ID").agg(
                 #包含網格數=("Grid_ID", "count"),
