@@ -15,34 +15,40 @@ import matplotlib.pyplot as plt
 
 # ==========================================
 # 🔤 遠端載入中文字體 (徹底解決 Streamlit Cloud 豆腐塊方格問題)
-# ==========================================
+這真的太頑固了！通常代表 Streamlit Cloud 的環境（Linux）在快取或系統字體管理（fontconfig）機制上，忽略了我們剛剛動態加進去的 .otf 檔案，導致 Matplotlib 在最終渲染圖片時仍然找不到對應的字形拓樸，繼續給我們噴出豆腐塊方格。
+
+別氣餒，我們改用 Matplotlib 最底層、最暴力也絕對不會被系統忽略 的招式：直接在畫地圖的指令裡，手動塞入一個 fontmanager.FontProperties 物件。
+
+這個方法跳過了系統註冊機制，直接在繪圖（如 set_title, set_xlabel）的當下指定字體路徑，通常是解開 Streamlit 豆腐塊的終極大絕。
+
+🛠️ 兩步驟終極大修正
+第一步：修改程式碼最上方（載入字體的函式）
+我們讓 load_chinese_font() 改為直接回傳字體屬性物件（FontProperties）。請把最上方的字體設定區塊改為這樣：
+
+Python
 import matplotlib.font_manager as fm
 import urllib.request
 
 @st.cache_resource
-def load_chinese_font():
-    """從網路下載開源的思源黑體，並註冊到 Matplotlib 中"""
+def load_chinese_font_prop():
+    """下載字體並回傳 FontProperties 物件，供繪圖時直接指定"""
     font_url = "https://github.com/googlefonts/noto-cjk/raw/main/Sans/OTF/TraditionalChinese/NotoSansCJKtc-Regular.otf"
     font_path = "NotoSansCJKtc-Regular.otf"
     
-    # 如果本地或伺服器還沒有這個字體檔，就下載它
     if not os.path.exists(font_path):
         try:
-            with st.spinner("📥 正在初始化中文字體環境 (僅限第一次啟動)..."):
+            with st.spinner("📥 正在初始化中文字體環境..."):
                 urllib.request.urlretrieve(font_url, font_path)
         except Exception as e:
-            st.error(f"字體下載失敗，改用系統預設：{e}")
+            st.error(f"字體下載失敗：{e}")
             return None
             
-    # 將字體註冊到 Matplotlib
-    fm.fontManager.addfont(font_path)
-    prop = fm.FontProperties(fname=font_path)
-    plt.rcParams['font.family'] = prop.get_name()
-    plt.rcParams['axes.unicode_minus'] = False
-    return prop.get_name()
+    # 直接建立並回傳字體屬性物件
+    return fm.FontProperties(fname=font_path)
 
-# 啟動中文字體載入
-font_name = load_chinese_font()
+# 取得字體屬性物件
+font_prop = load_chinese_font_prop()
+plt.rcParams['axes.unicode_minus'] = False
 
 # 1. 初始化網頁基本配置 (必須是第一個指令)
 st.set_page_config(
