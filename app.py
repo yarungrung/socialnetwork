@@ -237,7 +237,7 @@ def calculate_disaster_resilience_degradation(
     return df_bind
 
 # ==========================================
-# 🏃‍♂️ 執行與結果繪製
+# 🏃‍♂️ 執行與結果繪製 (已修正：條紋分群、經緯度座標軸)
 # ==========================================
 st.markdown("---")
 st.subheader("🏁 第二步：啟動生活圈分群模擬與指標計算")
@@ -245,13 +245,25 @@ st.subheader("🏁 第二步：啟動生活圈分群模擬與指標計算")
 if st.button("🔥 執行單次空間失能評估"):
     with st.spinner(f"⏳ 正在融合『真實全連通路網面』指標，精算大台中跨尺度網路降解擴散..."):
         
-        # 建立災害點
+        # 1. 修正條紋分群問題：利用真實空間區塊 (X/Y 座標範圍) 來模擬生活圈聚類，不再使用 Grid_ID % 18
+        # (備註：若要在正式版執行，請載入妳真實的 18 個 Corridor Polygon 底圖)
+        grid_cx = gdf_grids.geometry.centroid.x
+        grid_cy = gdf_grids.geometry.centroid.y
+        x_bins = pd.qcut(grid_cx, q=4, labels=False, duplicates='drop')
+        y_bins = pd.qcut(grid_cy, q=5, labels=False, duplicates='drop')
+        gdf_grids["mock_cluster"] = (x_bins * 5 + y_bins) % 18
+        
+        # 重新生成不撞車的生活圈面底圖
+        gdf_corridor_polygons_fixed = gdf_grids.dissolve(by="mock_cluster").reset_index()
+        gdf_corridor_polygons_fixed = gdf_corridor_polygons_fixed.rename(columns={"mock_cluster": "cluster_id"})
+        
+        # 建立災害點 (TWD97)
         disaster_pt = Point(st.session_state["twd97_x"], st.session_state["twd97_y"])
         
-        # ⭕ 正確呼叫精算函式，取得回傳的 DataFrame
+        # 呼叫精算函式，取得回傳的 DataFrame
         df_result = calculate_disaster_resilience_degradation(
             gdf_grids=gdf_grids,
-            gdf_corridor_polygons=gdf_corridor_polygons,
+            gdf_corridor_polygons=gdf_corridor_polygons_fixed,
             df_scores_calc=df_scores_calc,
             disaster_point=disaster_pt,
             radius=disaster_radius
@@ -259,14 +271,26 @@ if st.button("🔥 執行單次空間失能評估"):
         
         st.success(f"🎉 終極全連通路網屬性封裝與幾何平均降解計算完成！")
         
-        # 合併地理空間圖資與結果 (此處 df_result 確定為 DataFrame，不會報錯)
+        # 合併地理空間圖資與結果
         gdf_res_map = gdf_grids.merge(df_result, on="Grid_ID")
         
-        # 建立與 Jupyter 100% 同規格的彩圖畫布
+        # -------------------------------------------------------------
+        # 🌐 ✨ 核心關鍵：將所有要畫在畫布上的圖層，統一投影轉回經緯度 (WGS84)
+        # -------------------------------------------------------------
+        gdf_res_map_wgs84 = gdf_res_map.to_crs("EPSG:4326")
+        
+        # 建立災害中心點的經緯度點物件與緩衝圓圈
+        disaster_pt_wgs84 = Point(st.session_state["last_clicked_wgs84"][1], st.session_state["last_clicked_wgs84"][0])
+        # 圓圈要在 TWD97 投影座標系下 buffer(公尺) 才精準，轉過去才是漂亮的圓
+        disaster_circ_wgs84 = gpd.GeoSeries([disaster_pt.buffer(disaster_radius)], crs="EPSG:3826").to_crs("EPSG:4326")
+        
+        # -------------------------------------------------------------
+        # 🎨 開始繪圖 (此時座標軸自動變為經緯度)
+        # -------------------------------------------------------------
         fig, ax = plt.subplots(figsize=(12, 9), dpi=150)
         
-        # 1. 繪製多彩的防衛生活圈社群分群 (排除受災核心 -1)
-        gdf_clustered = gdf_res_map[gdf_res_map["生活圈分群ID"] != -1]
+        # 1. 繪製團塊狀（不再是條紋）的防衛生活圈社群分群 (排除受災核心 -1)
+        gdf_clustered = gdf_res_map_wgs84[gdf_res_map_wgs84["生活圈分群ID"] != -1]
         if not gdf_clustered.empty:
             gdf_clustered.plot(
                 column="生活圈分群ID", ax=ax, categorical=True, cmap="turbo", 
@@ -274,19 +298,23 @@ if st.button("🔥 執行單次空間失能評估"):
                 legend_kwds={'title': '🏡 防災連通防衛生活圈', 'loc': 'upper right', 'bbox_to_anchor': (1.35, 1)}
             )
             
-        # 2. 繪製被點選的紅色災害核心失能區
-        gdf_hit = gdf_res_map[gdf_res_map["生活圈分群ID"] == -1]
+        # 2. 繪製被點選的紅色災害核心失能區 (經緯度版)
+        gdf_hit = gdf_res_map_wgs84[gdf_res_map_wgs84["生活圈分群ID"] == -1]
         if not gdf_hit.empty:
             gdf_hit.plot(ax=ax, color="#d9534f", edgecolor="none", alpha=0.95, label="🚨 災害核心失能區")
             
-        # 3. 加上災害圓圈外框線
-        disaster_circ = disaster_pt.buffer(disaster_radius)
-        gpd.GeoSeries([disaster_circ]).plot(ax=ax, facecolor="none", edgecolor="black", linewidth=2, linestyle="--")
-        ax.scatter(st.session_state["twd97_x"], st.session_state["twd97_y"], color="yellow", marker="X", s=150, edgecolor="black", zorder=10, label="災害中心點")
+        # 3. 加上災害圓圈外框線與中心點
+        disaster_circ_wgs84.plot(ax=ax, facecolor="none", edgecolor="black", linewidth=2, linestyle="--")
+        ax.scatter(disaster_pt_wgs84.x, disaster_pt_wgs84.y, color="yellow", marker="X", s=150, edgecolor="black", zorder=10, label="災害中心點")
         
+        # 優化經緯度座標軸標籤
         ax.set_title(f"大台中都市防災生活圈量化評分與空間退化成果圖\n(模擬半徑: {disaster_radius} 公尺)", fontsize=14, fontweight='bold', pad=15)
-        ax.set_xlabel("TWD97 X 座標 (公尺)", fontsize=10)
-        ax.set_ylabel("TWD97 Y 座標 (公尺)", fontsize=10)
+        ax.set_xlabel("經度 (Longitude, WGS84)", fontsize=10)
+        ax.set_ylabel("緯度 (Latitude, WGS84)", fontsize=10)
+        
+        # 格式化座標軸數字，避免噴出一堆小數點
+        ax.xaxis.set_major_formatter(plt.FormatStrFormatter('%.3f°E'))
+        ax.yaxis.set_major_formatter(plt.FormatStrFormatter('%.3f°N'))
         ax.grid(True, linestyle=":", alpha=0.5)
         
         st.pyplot(fig)
