@@ -263,7 +263,7 @@ def calculate_disaster_resilience_degradation(
     return df_bind
 
 # ==========================================
-# 🏃‍♂️ 執行與結果繪製 (徹底修正 Typo KeyError 欄位錯字版)
+# 🏃‍♂️ 執行與結果繪製 (地圖居中 + 圖例橫向置底完美版)
 # ==========================================
 st.markdown("---")
 st.subheader("🏁 第二步：啟動生活圈分群模擬與指標計算")
@@ -347,14 +347,13 @@ if st.button("🔥 執行單次空間失能評估", key="fixed_louvain_plot"):
             post_scores.append(post_val)
             assigned_clusters.append(cluster_id)
             
-        # 🟢 修正核心：統一欄位字串命名，徹底拔除多打的「幾」字
+        # 封裝結果 Dataframe
         df_result = pd.DataFrame({
             "Grid_ID": gdf_grids["Grid_ID"].values,
             "生活圈分群ID": assigned_clusters,
             "災前_防災韌性(幾何平均)": baseline_scores,
             "災後_防災韌性(幾何平均)": post_scores
         })
-        # 這裡欄位字串現在 100% 對接，不會再觸發 KeyError
         df_result["最終韌性退化差值"] = df_result["災後_防災韌性(幾何平均)"] - df_result["災前_防災韌性(幾何平均)"]
 
         st.success(f"🎉 真實 Louvain 生活圈網路對接與幾何平均降解計算完成！")
@@ -415,15 +414,36 @@ if st.button("🔥 執行單次空間失能評估", key="fixed_louvain_plot"):
             )
         )
 
-        # 外觀優化，強制地理縱橫比 1:1，防止地圖比例尺變形
+        # -------------------------------------------------------------
+        # 🟢 ⭐ 修正核心：將圖例改為橫向置底，並釋放空間讓地圖絕對居中
+        # -------------------------------------------------------------
         fig_plotly.update_layout(
             width=900,
-            height=650,
+            height=850,  # 增加畫布整體高度，用來容納下方橫向排列的多組圖例
             xaxis=dict(tickformat=".3f"),
             yaxis=dict(tickformat=".3f"),
-            font=dict(family="Microsoft JhengHei, Arial Unicode MS, sans-serif", size=11)
+            font=dict(family="Microsoft JhengHei, Arial Unicode MS, sans-serif", size=11),
+            
+            # 核心設定：控制圖例位置與橫向排列
+            legend=dict(
+                orientation="h",        # 強制指定圖例為「橫向 (Horizontal)」排列
+                yanchor="top",          # 圖例的頂部對齊定位點
+                y=-0.12,                # 將定位點下拉到地圖 X 軸下方 (負值代表軸外下方)
+                xanchor="center",       # 圖例的水平中心點對齊定位點
+                x=0.5,                  # 放在正中間 (0.5 代表畫布正中央)
+                traceorder="normal"
+            ),
+            
+            # 手動拉大畫布底部的邊距（Margin），防止橫向圖例超出版面被裁切
+            margin=dict(
+                l=50,
+                r=50,
+                t=80,
+                b=150  # 底部留出 150 像素的安全空間給生活圈標籤們
+            )
         )
         
+        # 強制地理縱橫比 1:1，保證不被壓扁
         fig_plotly.update_yaxes(scaleanchor="x", scaleratio=1) 
         fig_plotly.update_traces(marker=dict(size=6, opacity=0.85), selector=dict(mode='markers'))
 
