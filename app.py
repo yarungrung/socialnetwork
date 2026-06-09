@@ -13,6 +13,37 @@ from shapely.geometry import Polygon, Point
 from collections import defaultdict
 import matplotlib.pyplot as plt
 
+# ==========================================
+# 🔤 遠端載入中文字體 (徹底解決 Streamlit Cloud 豆腐塊方格問題)
+# ==========================================
+import matplotlib.font_manager as fm
+import urllib.request
+
+@st.cache_resource
+def load_chinese_font():
+    """從網路下載開源的思源黑體，並註冊到 Matplotlib 中"""
+    font_url = "https://github.com/googlefonts/noto-cjk/raw/main/Sans/OTF/TraditionalChinese/NotoSansCJKtc-Regular.otf"
+    font_path = "NotoSansCJKtc-Regular.otf"
+    
+    # 如果本地或伺服器還沒有這個字體檔，就下載它
+    if not os.path.exists(font_path):
+        try:
+            with st.spinner("📥 正在初始化中文字體環境 (僅限第一次啟動)..."):
+                urllib.request.urlretrieve(font_url, font_path)
+        except Exception as e:
+            st.error(f"字體下載失敗，改用系統預設：{e}")
+            return None
+            
+    # 將字體註冊到 Matplotlib
+    fm.fontManager.addfont(font_path)
+    prop = fm.FontProperties(fname=font_path)
+    plt.rcParams['font.family'] = prop.get_name()
+    plt.rcParams['axes.unicode_minus'] = False
+    return prop.get_name()
+
+# 啟動中文字體載入
+font_name = load_chinese_font()
+
 # 1. 初始化網頁基本配置 (必須是第一個指令)
 st.set_page_config(
     page_title="臺中市都市防災空間網絡韌性評估系統", 
