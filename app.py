@@ -325,9 +325,9 @@ else:
                 "Grid_ID": gdf_grids["Grid_ID"].values,
                 "生活圈分群ID": assigned_clusters,
                 "災前_防災韌性(幾何平均)": baseline_scores,
-                "災後_防災韌性(幾幾何平均)": post_scores
+                "災後_防災韌性(幾何平均)": post_scores
             })
-            df_result["最終韌性退化差值"] = df_result["災後_防災韌性(幾幾何平均)"] - df_result["災前_防災韌性(幾何平均)"]
+            df_result["最終韌性退化差值"] = df_result["災後_防災韌性(幾何平均)"] - df_result["災前_防災韌性(幾何平均)"]
 
             st.success(f"🎉 真實 Louvain 生活圈網路對接與幾何平均降解計算完成！")
             
@@ -432,50 +432,26 @@ else:
             # ==============================================================================
             st.subheader("📊 災後防衛生活圈指標與網絡退化綜合統計表")
             
-            # 1. 動態偵測實際存在的欄位名稱（防止大小寫或中英文不一致）
-            grid_col = "Grid_ID" if "Grid_ID" in df_result.columns else ("grid_id" if "grid_id" in df_result.columns else df_result.columns[0])
-            diff_col = "最終韌性退化差值" if "最終韌性退化差值" in df_result.columns else [c for c in df_result.columns if "退化" in c or "差值" in c][0]
-            pre_col = [c for c in df_result.columns if "災前" in c or "baseline" in c][0]
-            post_col = [c for c in df_result.columns if "災後" in c or "post" in c][0]
-
-            # 1. 檢查 target_cluster_id 是否存在於目前的記憶體中，如果不存在則給予預設值 None
-            if "target_cluster_id" not in locals() and "target_cluster_id" not in globals():
-                target_cluster_id = None
-
-# 2. 用安全的 if-else 邏輯來產生生活圈名稱
-            def get_cluster_name(cid):
-                if target_cluster_id is not None and cid == target_cluster_id:
-                    return f"🚨 真實生活圈 {int(cid)} (受災核心)"
-                else:
-                    return f"🏡 真實生活圈 {int(cid)}"
-
-# 3. 套用至資料表
-            df_summary["防衛生活圈名稱"] = df_summary["生活圈分群ID"].apply(get_cluster_name)
-
-# 調整欄位順序美化輸出
-            columns_order = ["防衛生活圈名稱", "涵蓋空間網格數", "災前平均韌性", "災後平均韌性", "平均韌性退化差值"]
-            st.dataframe(df_summary[columns_order], use_container_width=True)
-            
-            #df_summary = df_result.groupby("生活圈分群ID").agg(
-                #包含網格數=("Grid_ID", "count"),
-                #災前平均韌性=("災前_防災韌性(幾何平均)", "mean"),
-                #災後平均韌性=("災後_防災韌性(幾何平均)", "mean"),
-                #平均韌性退化差值=("最終韌性退化差值", "mean")
-            #).reset_index()
+            df_summary = df_result.groupby("生活圈分群ID").agg(
+                包含網格數=("Grid_ID", "count"),
+                災前平均韌性=("災前_防災韌性(幾何平均)", "mean"),
+                災後平均韌性=("災後_防災韌性(幾何平均)", "mean"),
+                平均韌性退化差值=("最終韌性退化差值", "mean")
+            ).reset_index()
             
             # 優先以退化差值排序（慘的在上面），若相同則依生活圈 ID 排序
-            #df_summary = df_summary.sort_values(
-                #by=["平均韌性退化差值", "生活圈分群ID"], 
-                #ascending=[True, True]
-            #).reset_index(drop=True)
+            df_summary = df_summary.sort_values(
+                by=["平均韌性退化差值", "生活圈分群ID"], 
+                ascending=[True, True]
+            ).reset_index(drop=True)
             
-            #df_summary["生活圈分群ID"] = df_summary["生活圈分群ID"].apply(label_cluster_name)
+            df_summary["生活圈分群ID"] = df_summary["生活圈分群ID"].apply(label_cluster_name)
             
-            #st.dataframe(
-                #df_summary.style.format({
-                    #"災前平均韌性": "{:.2f}", 
-                    #"災後平均韌性": "{:.2f}", 
-                    #"平均韌性退化差值": "{:.2f}"
-                #}), 
-                #use_container_width=True
-            #)
+            st.dataframe(
+                df_summary.style.format({
+                    "災前平均韌性": "{:.2f}", 
+                    "災後平均韌性": "{:.2f}", 
+                    "平均韌性退化差值": "{:.2f}"
+                }), 
+                use_container_width=True
+            )
