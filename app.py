@@ -263,12 +263,13 @@ def calculate_disaster_resilience_degradation(
     return df_bind
 
 # ==========================================
-# 🏃‍♂️ 執行與結果繪製 (終極 Plotly 互動版：完美解決中文方格、重現真實 Louvain)
+# 🏃‍♂️ 執行與結果繪製 (加上 key 防止元件 ID 重複當機)
 # ==========================================
 st.markdown("---")
 st.subheader("🏁 第二步：啟動生活圈分群模擬與指標計算")
 
-if st.button("🔥 執行單次空間失能評估"):
+# 🟢 修正核心：加上 key="fixed_louvain_plot" 徹底解決 StreamlitDuplicateElementId 錯誤
+if st.button("🔥 執行單次空間失能評估", key="fixed_louvain_plot"):
     with st.spinner(f"⏳ 正在調用 Louvain 社群網路模組，為大台中進行空間裂解分群..."):
         
         # -------------------------------------------------------------
@@ -308,7 +309,7 @@ if st.button("🔥 執行單次空間失能評估"):
         baseline_scores = []
         post_scores = []
         
-        # 動態計算第二段方案 B 的幾何平均基礎分數
+        # 動態計算幾何平均基礎分數
         eps = 0.01
         df_scores = df_scores_calc.copy()
         df_scores["baseline_score"] = (
@@ -330,129 +331,13 @@ if st.button("🔥 執行單次空間失能評估"):
                 nearest_fac_idx = nearest_fac_indices[idx]
                 cluster_id = fac_to_cluster.get(nearest_fac_idx, 0)
                 
-            # 取得災前基礎分數 (若無對照則給予預設均值 85.13)
+            # 取得災前基礎分數
             base_val = cluster_to_base_score.get(cluster_id, 85.13)
             
             if cluster_id == -1:
                 post_val = 7.92  # 核心癱瘓殘存分數
             elif dist_to_disaster <= disaster_radius * 3.0:
-                # 半徑外圍波及區擴散扣分 (最大扣 45%)
-                proximity_factor = 1.0 - (dist_to_disaster - disaster_radius) / (disaster_radius * 2.0)
-                degradation = (base_val * 0.45) * proximity_factor
-                post_val = base_val - degradation
-            else:
-                post_val = base_val
-                
-            baseline_scores.append(base_val)
-            post_scores.append(post_val)
-            assigned_clusters.append(cluster_id)
-            
-        # 封裝結果 Dataframe
-        df_result = pd.DataFrame({
-            "Grid_ID": gdf_grids["Grid_ID"].values,
-            "生活圈分群ID": assigned_clusters,
-            "災前_防災韌性(幾何平均)": baseline_scores,
-            "災後_防災韌性(幾幾何平均)": post_scores
-        })
-        df_result["最終韌性退化差值"] = df_result["災後_防災韌性(幾幾何平均)"] - df_result["災前_防災韌性(幾何平均)"]
-
-        st.success(f"🎉 真實 Louvain 生活圈網路對接與幾何平均降解計算完成！")
-        
-        # 合併地理空間圖資與結果
-        gdf_res_map = gdf_grids.merge(df_result, on="Grid_ID")
-        
-        # -------------------------------------------------------------
-        # 🌐 座標轉換與 Plotly 資料準備 (由瀏覽器本地渲染中文，免裝字體)
-        # -------------------------------------------------------------
-        import plotly.express as px
-        import plotly.graph_objects as go
-
-        gdf_res_map_wgs84 = gdf_res_map.to_crs("EPSG:4326")
-        centroids_wgs84 = gdf_res_map_wgs84.geometry.centroid
-        gdf_res_map_wgs84["lon"] = centroids_wgs84.x
-        gdf_res_map_wgs84["lat"] = centroids_wgs84.y
-        
-        # 建立易讀的生活圈名稱
-        def label_cluster_name(cid):
-            if cid == -1: return "🚨 災害核心失能區"
-            return f"🏡 Louvain 生活圈分區 {int(cid)}"
-        gdf_res_map_wgs84["生活圈名稱"] = gdf_res_map_wgs84["生活圈分群ID"].apply(label_cluster_name)
-
-# ==========================================
-# 🏃‍♂️ 執行與結果繪製 (比例尺優化、圖例置底、欄位補齊版)
-# ==========================================
-st.markdown("---")
-st.subheader("🏁 第二步：啟動生活圈分群模擬與指標計算")
-
-if st.button("🔥 執行單次空間失能評估"):
-    with st.spinner(f"⏳ 正在調用 Louvain 社群網路模組，為大台中進行空間裂解分群..."):
-        
-        # -------------------------------------------------------------
-        # 1. 執行真實 Louvain 社群演算法 (重現妳 Jupyter 的分群結構)
-        # -------------------------------------------------------------
-        G_fac_net = nx.Graph()
-        for i in range(len(fac_coords_arr)):
-            G_fac_net.add_node(i, fac_type=fac_types_list[i])
-            
-        for i in range(0, len(fac_coords_arr), 3):
-            dists, indices = fac_tree.query(fac_coords_arr[i], k=12)
-            for d, idx in zip(dists, indices):
-                if d <= 4500.0 and i != idx:
-                    G_fac_net.add_edge(i, idx, weight=max(0.1, 4500.0 - d))
-                    
-        try:
-            communities = nx.community.louvain_communities(G_fac_net, weight="weight", seed=42)
-            fac_to_cluster = {}
-            for c_idx, com in enumerate(communities):
-                for node in com:
-                    fac_to_cluster[node] = c_idx
-        except:
-            fac_to_cluster = {i: (i % 8) for i in range(len(fac_coords_arr))}
-
-        # -------------------------------------------------------------
-        # 2. 透過 KDTree 空間對接，將真實 Louvain 成果擴散至網格面，並計算退化
-        # -------------------------------------------------------------
-        grid_centroids = gdf_grids.geometry.centroid
-        grid_coords = np.array([[c.x, c.y] for c in grid_centroids])
-        
-        # 讓每個網格尋找最近的設施，借用其 Louvain 生活圈 ID
-        _, nearest_fac_indices = fac_tree.query(grid_coords, k=1)
-        
-        disaster_pt = Point(st.session_state["twd97_x"], st.session_state["twd97_y"])
-        
-        assigned_clusters = []
-        baseline_scores = []
-        post_scores = []
-        
-        # 動態計算第二段方案 B 的幾何平均基礎分數
-        eps = 0.01
-        df_scores = df_scores_calc.copy()
-        df_scores["baseline_score"] = (
-            (df_scores["醫院_Norm"] + eps) *
-            (df_scores["避難收容_Norm"] + eps) *
-            ((df_scores["五大超商_Norm"] + df_scores["量販店_Norm"] + df_scores["加油站_Norm"])/3 + eps) *
-            (df_scores["Closeness_Norm"] + eps)
-        ) ** (1/4) * 100
-        cluster_to_base_score = df_scores.set_index("cluster_id")["baseline_score"].to_dict()
-
-        for idx in range(len(gdf_grids)):
-            centroid = grid_centroids.iloc[idx]
-            dist_to_disaster = centroid.distance(disaster_pt)
-            
-            # 判定所屬生活圈
-            if dist_to_disaster <= disaster_radius:
-                cluster_id = -1  # 災害核心失能
-            else:
-                nearest_fac_idx = nearest_fac_indices[idx]
-                cluster_id = fac_to_cluster.get(nearest_fac_idx, 0)
-                
-            # 取得災前基礎分數 (若無對照則給予預設均值 85.13)
-            base_val = cluster_to_base_score.get(cluster_id, 85.13)
-            
-            if cluster_id == -1:
-                post_val = 7.92  # 核心癱瘓殘存分數
-            elif dist_to_disaster <= disaster_radius * 3.0:
-                # 半徑外圍波及區擴散扣分 (最大扣 45%)
+                # 半徑外圍波及區擴散扣分
                 proximity_factor = 1.0 - (dist_to_disaster - disaster_radius) / (disaster_radius * 2.0)
                 degradation = (base_val * 0.45) * proximity_factor
                 post_val = base_val - degradation
@@ -495,7 +380,7 @@ if st.button("🔥 執行單次空間失能評估"):
         gdf_res_map_wgs84["生活圈名稱"] = gdf_res_map_wgs84["生活圈分群ID"].apply(label_cluster_name)
 
         # -------------------------------------------------------------
-        # 🎨 繪製 Plotly 動態互動地圖 (完整補齊欄位，修正 ValueError)
+        # 🎨 繪製 Plotly 動態互動地圖 (完整補齊欄位)
         # -------------------------------------------------------------
         fig_plotly = px.scatter(
             gdf_res_map_wgs84, 
@@ -505,79 +390,4 @@ if st.button("🔥 執行單次空間失能評估"):
             title=f"大台中都市防災生活圈空間退化成果圖 (真實 Louvain 網路) — 模擬半徑: {disaster_radius} 公尺",
             labels={"lon": "經度 (Longitude)", "lat": "緯度 (Latitude)"},
             color_discrete_map={"🚨 災害核心失能區": "#d9534f"},
-            hover_data={
-                "Grid_ID": True, 
-                "災前_防災韌性(幾何平均)": ":.2f", 
-                "災後_防災韌性(幾幾何平均)": ":.2f", 
-                "最終韌性退化差值": ":.2f",
-                "lon": False, 
-                "lat": False, 
-                "生活圈名稱": False
-            }
-        )
-
-        # 疊加黃色大叉叉作為災害中心點
-        disaster_lon = st.session_state["last_clicked_wgs84"][1]
-        disaster_lat = st.session_state["last_clicked_wgs84"][0]
-        fig_plotly.add_trace(
-            go.Scatter(
-                x=[disaster_lon], 
-                y=[disaster_lat],
-                mode="markers",
-                marker=dict(color="yellow", size=14, symbol="x", line=dict(color="black", width=2)),
-                name="🎯 災害中心點",
-                showlegend=True
-            )
-        )
-
-        # -------------------------------------------------------------
-        # 🟢 ⭐ 修正核心：釋放右側空間，將大量圖例橫向置底，並鎖定 1:1 幾何比例
-        # -------------------------------------------------------------
-        fig_plotly.update_layout(
-            width=900,
-            height=750,  # 稍微加高留給底部的圖例放
-            xaxis=dict(tickformat=".3f"),
-            yaxis=dict(tickformat=".3f"),
-            font=dict(family="Microsoft JhengHei, Arial Unicode MS, sans-serif", size=11),
-            title=dict(font=dict(size=14, fontweight='bold'), x=0.02),
-            
-            # 將圖例改為橫向 (horizontal)，並放在地圖正下方 (y=-0.15)
-            legend=dict(
-                orientation="h",
-                yanchor="top",
-                y=-0.12,
-                xanchor="center",
-                x=0.5,
-                title_text="🗺️ 圖例項目"
-            )
-        )
-        
-        # 強制 1:1 地理經緯度軸顯示比例，保證地圖不被拉伸變形
-        fig_plotly.update_yaxes(scaleanchor="x", scaleratio=1) 
-        fig_plotly.update_traces(marker=dict(size=6, opacity=0.85), selector=dict(mode='markers'))
-
-        # 渲染至 Streamlit 網頁
-        st.plotly_chart(fig_plotly, use_container_width=False)
-        
-        # ==========================================
-        # 📊 呈現綜合統計表
-        # ==========================================
-        st.subheader("📊 災後防衛生活圈指標與網絡退化綜合統計表")
-        
-        df_summary = df_result.groupby("生活圈分群ID").agg(
-            包含網格數=("Grid_ID", "count"),
-            災前平均韌性=("災前_防災韌性(幾何平均)", "mean"),
-            災後平均韌性=("災後_防災韌性(幾幾何平均)", "mean"),
-            平均韌性退化差值=("最終韌性退化差值", "mean")
-        ).reset_index()
-        
-        df_summary["生活圈分群ID"] = df_summary["生活圈分群ID"].apply(label_cluster_name)
-        
-        st.dataframe(
-            df_summary.style.format({
-                "災前平均韌性": "{:.2f}", 
-                "災後平均韌性": "{:.2f}", 
-                "平均韌性退化差值": "{:.2f}"
-            }), 
-            use_container_width=True
-        )
+            hover_data
