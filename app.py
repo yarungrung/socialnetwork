@@ -193,18 +193,18 @@ m = folium.Map(
     tiles="OpenStreetMap"
 )
 
-# 4. 🔥 將遮罩塗上白色（或深灰色）疊加到地圖上，把外縣市蓋掉，留下台中市！
+# 4. 🔥 將遮罩塗上白色疊加到地圖上，把外縣市蓋掉，留下台中市！
 folium.GeoJson(
     gdf_inverse_mask,
     style_function=lambda x: {
-        'fillColor': '#ffffff',  # 填滿白色 (也可以改成 #333333 變成暗色質感)
-        'color': '#ffffff',      # 線條顏色
-        'fillOpacity': 0.75,     # 75% 遮蔽率，讓外縣市隱約看得到但明顯變白
+        'fillColor': '#ffffff',  
+        'color': '#ffffff',      
+        'fillOpacity': 0.75,     
         'weight': 0
     }
 ).add_to(m)
 
-# 5. 把台中市的邊界描上一條淡淡的紅線，更清晰
+# 5. 把台中市的邊界描上一條淡淡的紅線
 folium.GeoJson(
     gpd.GeoDataFrame(geometry=[taichung_polygon], crs="EPSG:4326"),
     style_function=lambda x: {
@@ -235,13 +235,12 @@ if "last_clicked_wgs84" in st.session_state and st.session_state["last_clicked_w
 # 6. 渲染地圖
 output = st_folium(m, width=900, height=480, key="taichung_spotlight_map")
 
-# 7. 點擊防呆判斷：利用 Shapely 判斷點選位置是否真的在台中 Polygon 內部！
+# 7. 點擊防呆判斷
 if output and output.get("last_clicked"):
     clicked_lat = output["last_clicked"]["lat"]
     clicked_lon = output["last_clicked"]["lng"]
-    clicked_point = Point(clicked_lon, clicked_lat) # 注意 Shapely 是 (X, Y) 也就是 (經度, 緯度)
+    clicked_point = Point(clicked_lon, clicked_lat) 
     
-    # 精準幾何檢查：點擊點是否被台中市多邊形「包含」
     if taichung_polygon.contains(clicked_point):
         st.session_state["last_clicked_wgs84"] = (clicked_lat, clicked_lon)
         twd97_x, twd97_y = to_twd97.transform(clicked_lon, clicked_lat)
@@ -249,70 +248,6 @@ if output and output.get("last_clicked"):
         st.session_state["twd97_y"] = twd97_y
     else:
         st.error("🚨 錯誤！您點選的位置屬於彰化、南投等外縣市（已被遮罩遮蔽區）。請重新在亮區（台中市內）點選！")
-
-# ==========================================
-# 🛠️ 核心 Louvain 與真實擴散退化計算模組
-# ==========================================
-def calculate_disaster_resilience_degradation(
-    gdf_grids: gpd.GeoDataFrame,
-    gdf_corridor_polygons: gpd.GeoDataFrame,
-    df_scores_calc: pd.DataFrame,
-    disaster_point,
-    radius: float,
-    eps: float = 0.01
-) -> pd.DataFrame:
-    grid_centroids = gdf_grids.copy()
-    grid_centroids["geometry"] = grid_centroids.geometry.centroid
-    
-    sj_grids = gpd.sjoin(grid_centroids, gdf_corridor_polygons[['cluster_id', 'geometry']], how="left", predicate="within")
-    
-    df_scores = df_scores_calc.copy()
-    df_scores["baseline_score"] = (
-        (df_scores["醫院_Norm"] + eps) *
-        (df_scores["避難收容_Norm"] + eps) *
-        ((df_scores["五大超商_Norm"] + df_scores["量販店_Norm"] + df_scores["加油站_Norm"])/3 + eps) *
-        (df_scores["Closeness_Norm"] + eps)
-    ) ** (1/4) * 100
-    
-    cluster_to_base_score = df_scores.set_index("cluster_id")["baseline_score"].to_dict()
-
-    assigned_clusters = []
-    baseline_scores = []
-    post_scores = []
-    
-    for idx in range(len(gdf_grids)):
-        centroid = grid_centroids.geometry.iloc[idx]
-        orig_cluster = sj_grids["cluster_id"].iloc[idx]
-        
-        base_val = cluster_to_base_score.get(orig_cluster, 50.0) 
-        dist_to_disaster = centroid.distance(disaster_point)
-        
-        if dist_to_disaster <= radius:
-            cluster_id = -1      
-            post_val = 7.92      
-        else:
-            cluster_id = orig_cluster if not pd.isna(orig_cluster) else 0
-            
-            if dist_to_disaster <= radius * 3.0:
-                proximity_factor = 1.0 - (dist_to_disaster - radius) / (radius * 2.0)
-                degradation = (base_val * 0.45) * proximity_factor
-                post_val = base_val - degradation
-            else:
-                post_val = base_val
-                
-        baseline_scores.append(base_val)
-        post_scores.append(post_val)
-        assigned_clusters.append(cluster_id)
-        
-    df_bind = pd.DataFrame({
-        "Grid_ID": gdf_grids["Grid_ID"].values,
-        "生活圈分群ID": assigned_clusters,
-        "災前_防災韌性(幾何平均)": baseline_scores,
-        "災後_防災韌性(幾何平均)": post_scores
-    })
-    df_bind["最終韌性退化差值"] = df_bind["災後_防災韌性(幾何平均)"] - df_bind["災前_防災韌性(幾何平均)"]
-    
-    return df_bind
 
 # ==========================================
 # 🏃‍♂️ 執行與結果繪製
@@ -412,7 +347,7 @@ else:
             
             def label_cluster_name(cid):
                 if cid == -1: return "🚨 災害核心失能區"
-                return f"🏡 生活圈分區 {int(cid)}"
+                return f"🏡 Louvain 生活圈分區 {int(cid)}"
             gdf_res_map_wgs84["生活圈名稱"] = gdf_res_map_wgs84["生活圈分群ID"].apply(label_cluster_name)
 
             fig_plotly = px.scatter(
@@ -469,7 +404,12 @@ else:
 
             st.plotly_chart(fig_plotly, use_container_width=False)
             
+            # ==============================================================================
+            # 📊 更新後的統計表模組：優先以【平均韌性退化差值】由重到輕排序
+            # ==============================================================================
             st.subheader("📊 災後防衛生活圈指標與網絡退化綜合統計表")
+            
+            # 1. 先進行群組聚合計算
             df_summary = df_result.groupby("生活圈分群ID").agg(
                 包含網格數=("Grid_ID", "count"),
                 災前平均韌性=("災前_防災韌性(幾何平均)", "mean"),
@@ -477,8 +417,18 @@ else:
                 平均韌性退化差值=("最終韌性退化差值", "mean")
             ).reset_index()
             
+            # 2. 🔥 核心多條件排序邏輯：
+            #    - 平均韌性退化差值設為 True (升冪排序，讓負數最大如 -77.21 排在最上方)
+            #    - 生活圈分群ID 設為 True (升冪排序，讓沒受災且退化值都是 0.00 的區塊依 ID 0, 1, 2... 排序)
+            df_summary = df_summary.sort_values(
+                by=["平均韌性退化差值", "生活圈分群ID"], 
+                ascending=[True, True]
+            ).reset_index(drop=True)
+            
+            # 3. 排序完成後，再將分群 ID 轉換為好讀的文字標籤（避免文字打亂排序權重）
             df_summary["生活圈分群ID"] = df_summary["生活圈分群ID"].apply(label_cluster_name)
             
+            # 4. 渲染至 Streamlit 網頁表格
             st.dataframe(
                 df_summary.style.format({
                     "災前平均韌性": "{:.2f}", 
