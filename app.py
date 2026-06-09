@@ -378,52 +378,54 @@ if st.button("🔥 執行單次空間失能評估"):
             return f"🏡 Louvain 生活圈分區 {int(cid)}"
         gdf_res_map_wgs84["生活圈名稱"] = gdf_res_map_wgs84["生活圈分群ID"].apply(label_cluster_name)
 
+# ==========================================
+# 🏃‍♂️ 執行與結果繪製 (比例尺與畫布比例修正)
+# ==========================================
+# ...前面計算df_result, gdf_res_map_wgs84的代碼維持不變...
+
         # -------------------------------------------------------------
-        # 🎨 繪製 Plotly 動態互動地圖 (直接調用本機中文字體)
+        # 🎨 繪製 Plotly 動態互動地圖 (強制修正畫布與地理幾何比例)
         # -------------------------------------------------------------
         fig_plotly = px.scatter(
             gdf_res_map_wgs84, 
-            x="lon", 
-            y="lat", 
-            color="生活圈名稱",
-            title=f"大台中都市防災生活圈量化評分與空間退化成果圖 (真實 Louvain 網路) — 模擬半徑: {disaster_radius} 公尺",
+            # ...妳原本 fig_plotly = px.scatter(...) 的參數全部維持不變...
             labels={"lon": "經度 (Longitude, WGS84)", "lat": "緯度 (Latitude, WGS84)"},
-            color_discrete_map={"🚨 災害核心失能區": "#d9534f"}, # 核心失能強制定色為深紅
-            hover_data={
-                "Grid_ID": True, 
-                "災前_防災韌性(幾何平均)": ":.2f", 
-                "災後_防災韌性(幾幾何平均)": ":.2f", 
-                "最終韌性退化差值": ":.2f",
-                "lon": False, "lat": False, "生活圈名稱": False
-            }
+            color_discrete_map={"🚨 災害核心失能區": "#d9534f"},
+            hover_data={...} # 保持原樣
         )
 
-        # 疊加黃色大叉叉作為災害中心點
-        disaster_lon = st.session_state["last_clicked_wgs84"][1]
-        disaster_lat = st.session_state["last_clicked_wgs84"][0]
-        fig_plotly.add_trace(
-            go.Scatter(
-                x=[disaster_lon], 
-                y=[disaster_lat],
-                mode="markers",
-                marker=dict(color="yellow", size=14, symbol="x", line=dict(color="black", width=2)),
-                name="🎯 災害中心點",
-                showlegend=True
-            )
-        )
+        # 疊加災害中心點 (保持原樣)
+        fig_plotly.add_trace(go.Scatter(...))
 
-        # 圖表美化與中文字體家族自適應
+        # -------------------------------------------------------------
+        # 🔴 ⭐ 修正核心：優化畫布寬高比，避免幾何幾何拉伸變形
+        # -------------------------------------------------------------
         fig_plotly.update_layout(
-            width=1000,
-            height=700,
+            # 我們手動設定一個較小的、且符合東西長南北短特性 (例如 4:3 或 16:10) 的畫布寬高。
+            # 這能強迫圖表不管在多寬的螢幕上，都維持這個固定的「畫布幾何幾何外型」。
+            width=900,
+            height=600, # 調整寬高比為 3:2，讓台中東西向能完全伸展，不致過度壓縮
+            
             xaxis=dict(tickformat=".3f"),
             yaxis=dict(tickformat=".3f"),
             legend_title_text="🗺️ 圖例項目",
-            font=dict(family="Microsoft JhengHei, Arial Unicode MS, sans-serif", size=12),
-            title=dict(font=dict(size=16), x=0.05)
+            font=dict(family="Microsoft JhengHei, Arial Unicode MS, sans-serif", size=11),
+            title=dict(font=dict(size=15), x=0.01),
+            
+            # 選項：如果妳希望背景是地圖底圖 (如 Mapbox/OSM)，可以開啟，更像GIS成果
+            # mapbox=dict(style="carto-positron"),
         )
-        fig_plotly.update_traces(marker=dict(size=6, opacity=0.85), selector=dict(mode='markers'))
+        
+        # 🟢 強制地理座標軸為 1:1 比例：這是 GIS 出圖最穩定的方法
+        # 這能保證地圖上的 1度經度 跟 1度緯度 在畫面上的距離是相等的，避免地圖變形。
+        fig_plotly.update_yaxes(scaleanchor="x", scaleratio=1) 
+        
+        # 調整點的大小與透明度，讓它們看起来像大面積的網格區塊 (保持原樣或微調)
+        fig_plotly.update_traces(marker=dict(size=7, opacity=0.9), selector=dict(mode='markers'))
 
+        # 最後在發送給 Streamlit 時，我們可以選不要用 container_width 
+        # (因為我們在 plotly 裡面手動設定了 900x600 是一個漂亮的尺寸)
+        st.plotly_chart(fig_plotly, use_container_width=False) # 🟢 選項: 關閉 use_container_width 讓 plotly 固定在 900px 寬
         # 發送至前端網頁展示
         st.plotly_chart(fig_plotly, use_container_width=True)
         
