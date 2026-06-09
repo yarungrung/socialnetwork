@@ -61,7 +61,7 @@ def load_base_spatial_data():
     LIMIT_X = (180000, 250000)
     LIMIT_Y = (2650000, 2710000)
     
-    # 🗺️ 【核心防線升級】直接從 OSM 下載台中市精準行政區 Polygon (WGS84)
+    # 🗺️ 從 OSM 下載台中市精準行政區 Polygon (WGS84)
     with st.spinner("🗺️ 正在從 OpenStreetMap 擷取大台中精準行政邊界..."):
         taichung_boundary_gdf = ox.geocode_to_gdf("Taichung, Taiwan")
         taichung_polygon = taichung_boundary_gdf.geometry.iloc[0]
@@ -172,18 +172,17 @@ st.sidebar.header("🎯 災害情境自訂面板")
 disaster_radius = st.sidebar.slider("指定道路失能半徑 (公尺)", min_value=100, max_value=5000, value=2500, step=100)
 
 # ==============================================================================
-# 🎯 限制只能點選大台中：世界遮罩聚光燈技術 (Spotlight Mask)
+# 🎯 限制只能點選大台中：世界遮罩聚光燈技術
 # ==============================================================================
 st.markdown("### 📍 請在下方地圖上點選「災害中心點位置」")
 st.caption("💡 系統已啟用「台中聚光燈遮罩」，台中市以外的縣市已作半透明遮蔽，請直接點選境內地標。")
 
-# 1. 建立涵蓋全台灣/全球的巨大外部矩形
+# 1. 建立涵蓋全台灣的巨大外部矩形
 world_box = Polygon([(118.0, 20.0), (123.5, 20.0), (123.5, 26.5), (118.0, 26.5)])
-# 2. 減去台中市的行政區 Polygon -> 得到一個「中間挖空台中市」的巨大遮罩面
 inverse_mask_geometry = world_box.difference(taichung_polygon)
 gdf_inverse_mask = gpd.GeoDataFrame(geometry=[inverse_mask_geometry], crs="EPSG:4326")
 
-# 3. 初始化 Folium 地圖
+# 2. 初始化 Folium 地圖
 taichung_center = [24.220, 120.700]
 m = folium.Map(
     location=taichung_center,
@@ -193,7 +192,7 @@ m = folium.Map(
     tiles="OpenStreetMap"
 )
 
-# 4. 🔥 將遮罩塗上白色疊加到地圖上，把外縣市蓋掉，留下台中市！
+# 3. 將遮罩塗上白色疊加到地圖上
 folium.GeoJson(
     gdf_inverse_mask,
     style_function=lambda x: {
@@ -204,7 +203,7 @@ folium.GeoJson(
     }
 ).add_to(m)
 
-# 5. 把台中市的邊界描上一條淡淡的紅線
+# 4. 把台中市的邊界描上一條紅線
 folium.GeoJson(
     gpd.GeoDataFrame(geometry=[taichung_polygon], crs="EPSG:4326"),
     style_function=lambda x: {
@@ -215,7 +214,6 @@ folium.GeoJson(
     }
 ).add_to(m)
 
-# 如果已經點選過，繪製紅點波及圈
 if "last_clicked_wgs84" in st.session_state and st.session_state["last_clicked_wgs84"] is not None:
     folium.Marker(
         location=st.session_state["last_clicked_wgs84"],
@@ -232,10 +230,8 @@ if "last_clicked_wgs84" in st.session_state and st.session_state["last_clicked_w
         fill_opacity=0.2
     ).add_to(m)
 
-# 6. 渲染地圖
 output = st_folium(m, width=900, height=480, key="taichung_spotlight_map")
 
-# 7. 點擊防呆判斷
 if output and output.get("last_clicked"):
     clicked_lat = output["last_clicked"]["lat"]
     clicked_lon = output["last_clicked"]["lng"]
@@ -247,7 +243,7 @@ if output and output.get("last_clicked"):
         st.session_state["twd97_x"] = twd97_x
         st.session_state["twd97_y"] = twd97_y
     else:
-        st.error("🚨 錯誤！您點選的位置屬於彰化、南投等外縣市（已被遮罩遮蔽區）。請重新在亮區（台中市內）點選！")
+        st.error("🚨 錯誤！您點選的位置屬於外縣市。請重新在亮區（台中市內）點選！")
 
 # ==========================================
 # 🏃‍♂️ 執行與結果繪製
@@ -345,10 +341,28 @@ else:
             gdf_res_map_wgs84["lon"] = centroids_wgs84.x
             gdf_res_map_wgs84["lat"] = centroids_wgs84.y
             
+            # 建立易讀名稱，並在此處格式化以便排序
             def label_cluster_name(cid):
                 if cid == -1: return "🚨 災害核心失能區"
-                return f"🏡 Louvain 生活圈分區 {int(cid)}"
+                return f"🏡 Louvain 生活圈分區 {int(cid):02d}"  # 補零（如分區 02）確保圖例能依英文字母與數字完美排序
+                
             gdf_res_map_wgs84["生活圈名稱"] = gdf_res_map_wgs84["生活圈分群ID"].apply(label_cluster_name)
+
+            # 🔥 排序資料流：確保「災害核心區」必定在最前，其餘依分區數字從小到大排序，圖例順序才會完美
+            gdf_res_map_wgs84 = gdf_res_map_wgs84.sort_values(by=["生活圈分群ID"], ascending=[True])
+
+            # 指定特定顏色地圖，確保災害核心失能區呈現絕對高亮的「深亮紅」
+            unique_clusters = gdf_res_map_wgs84["生活圈名稱"].unique()
+            color_map = {}
+            # 使用內建調色盤，為每個分區分配和諧的色彩
+            colors_pool = px.colors.qualitative.Alphabet + px.colors.qualitative.Dark24
+            color_idx = 0
+            for uc in unique_clusters:
+                if uc == "🚨 災害核心失能區":
+                    color_map[uc] = "#e74c3c"  # 搶眼正紅色
+                else:
+                    color_map[uc] = colors_pool[color_idx % len(colors_pool)]
+                    color_idx += 1
 
             fig_plotly = px.scatter(
                 gdf_res_map_wgs84, 
@@ -357,7 +371,8 @@ else:
                 color="生活圈名稱",
                 title=f"<b>大台中都市防災生活圈空間退化成果圖 (真實 Louvain 網路) — 模擬半徑: {disaster_radius} 公尺</b>",
                 labels={"lon": "經度 (Longitude)", "lat": "緯度 (Latitude)"},
-                color_discrete_map={"🚨 災害核心失能區": "#d9534f"},
+                color_discrete_map=color_map,
+                category_orders={"生活圈名稱": list(unique_clusters)}, # 強制限制圖例顯示排序
                 hover_data={
                     "Grid_ID": True, 
                     "災前_防災韌性(幾何平均)": ":.2f", 
@@ -369,6 +384,7 @@ else:
                 }
             )
 
+            # 🔥 加大加粗高亮「🎯 災害中心點」標記，徹底解決看不見的問題！
             disaster_lon = st.session_state["last_clicked_wgs84"][1]
             disaster_lat = st.session_state["last_clicked_wgs84"][0]
             fig_plotly.add_trace(
@@ -376,40 +392,44 @@ else:
                     x=[disaster_lon], 
                     y=[disaster_lat],
                     mode="markers",
-                    marker=dict(color="yellow", size=14, symbol="x", line=dict(color="black", width=2)),
-                    name="🎯 災害中心點",
+                    marker=dict(
+                        color="#f1c40f",       # 閃亮皇家黃金黃
+                        size=18,               # 顯眼超大號尺寸
+                        symbol="x-dot",        # 帶有核心錨點的交叉記號
+                        line=dict(color="#2c3e50", width=3) # 加粗深色外框線
+                    ),
+                    name="🎯 災害模擬中心點",
                     showlegend=True
                 )
             )
 
             fig_plotly.update_layout(
-                width=900,
+                width=950,
                 height=850,  
                 xaxis=dict(tickformat=".3f"),
                 yaxis=dict(tickformat=".3f"),
                 font=dict(family="Microsoft JhengHei, Arial Unicode MS, sans-serif", size=11),
                 legend=dict(
-                    orientation="h",        
+                    orientation="v",        # 改回垂直排列，右側能看清所有排序分區
                     yanchor="top",          
-                    y=-0.12,                
-                    xanchor="center",       
-                    x=0.5,                  
+                    y=1.0,                
+                    xanchor="left",       
+                    x=1.02,                  
                     traceorder="normal"
                 ),
-                margin=dict(l=50, r=50, t=80, b=150)
+                margin=dict(l=50, r=200, t=80, b=80)
             )
             
             fig_plotly.update_yaxes(scaleanchor="x", scaleratio=1) 
-            fig_plotly.update_traces(marker=dict(size=6, opacity=0.85), selector=dict(mode='markers'))
+            fig_plotly.update_traces(marker=dict(size=6, opacity=0.9), selector=dict(mode='markers'))
 
             st.plotly_chart(fig_plotly, use_container_width=False)
             
             # ==============================================================================
-            # 📊 更新後的統計表模組：優先以【平均韌性退化差值】由重到輕排序
+            # 📊 更新後的統計表模組：受災最重排最前，其餘依 ID 遞增排
             # ==============================================================================
             st.subheader("📊 災後防衛生活圈指標與網絡退化綜合統計表")
             
-            # 1. 先進行群組聚合計算
             df_summary = df_result.groupby("生活圈分群ID").agg(
                 包含網格數=("Grid_ID", "count"),
                 災前平均韌性=("災前_防災韌性(幾何平均)", "mean"),
@@ -417,18 +437,15 @@ else:
                 平均韌性退化差值=("最終韌性退化差值", "mean")
             ).reset_index()
             
-            # 2. 🔥 核心多條件排序邏輯：
-            #    - 平均韌性退化差值設為 True (升冪排序，讓負數最大如 -77.21 排在最上方)
-            #    - 生活圈分群ID 設為 True (升冪排序，讓沒受災且退化值都是 0.00 的區塊依 ID 0, 1, 2... 排序)
+            # 排序：災損最重（負數最大，如 -77）排最上面，剩餘沒受災（差值為 0）的依生活圈 ID 遞增排序
             df_summary = df_summary.sort_values(
                 by=["平均韌性退化差值", "生活圈分群ID"], 
                 ascending=[True, True]
             ).reset_index(drop=True)
             
-            # 3. 排序完成後，再將分群 ID 轉換為好讀的文字標籤（避免文字打亂排序權重）
+            # 轉換為格式化名稱標籤
             df_summary["生活圈分群ID"] = df_summary["生活圈分群ID"].apply(label_cluster_name)
             
-            # 4. 渲染至 Streamlit 網頁表格
             st.dataframe(
                 df_summary.style.format({
                     "災前平均韌性": "{:.2f}", 
