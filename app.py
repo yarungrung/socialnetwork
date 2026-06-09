@@ -428,77 +428,105 @@ else:
             st.plotly_chart(fig_plotly, use_container_width=False)
 
             
-            # ==============================================================================
-            # 🟥⬜🟩 韌性變化網格填色圖（災後－災前）
-            # ==============================================================================
-            st.subheader("🟥⬜🟩 韌性變化網格填色圖（災後網格 - 災前網格）")
+# ==============================================================================
+# 🟥⬜🟩 韌性變化網格填色圖（災後－災前）
+# ==============================================================================
+st.subheader("🟥⬜🟩 韌性變化網格填色圖（災後網格 - 災前網格）")
 
-            from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm
+from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm
 
-            gdf_change = gdf_res_map.copy()
+# 1. 複製資料，並將其投影轉換為 WGS84 經緯度座標系 (EPSG:4326)
+gdf_change = gdf_res_map.copy().to_crs("EPSG:4326")
 
-            valid_scores = (
-                gdf_change["最終韌性退化差值"]
-                .replace([np.inf, -np.inf], np.nan)
-                .dropna()
-            )
+valid_scores = (
+    gdf_change["最終韌性退化差值"]
+    .replace([np.inf, -np.inf], np.nan)
+    .dropna()
+)
 
-            vmin = min(valid_scores.min(), -0.01)
-            vmax = max(valid_scores.max(), 0.01)
+vmin = min(valid_scores.min(), -0.01)
+vmax = max(valid_scores.max(), 0.01)
 
-            cmap_rwg = LinearSegmentedColormap.from_list(
-                "RdGyGn",
-                ["#b2182b", "#E8E8E8", "#1a9850"]
-            )
+cmap_rwg = LinearSegmentedColormap.from_list(
+    "RdGyGn",
+    ["#b2182b", "#E8E8E8", "#1a9850"]
+)
 
-            norm = TwoSlopeNorm(
-                vcenter=0.0,
-                vmin=vmin,
-                vmax=vmax
-            )
+norm = TwoSlopeNorm(
+    vcenter=0.0,
+    vmin=vmin,
+    vmax=vmax
+)
 
-            fig_resilience, ax = plt.subplots(figsize=(16, 14))
+# 2. 建立畫布
+fig_resilience, ax = plt.subplots(figsize=(16, 14))
 
-            ax.set_title(
-                f"臺中市防災韌性變化圖\n"
-                f"Final Score = 災後網格分數 - 災前網格分數；失能半徑 {disaster_radius} 公尺",
-                fontsize=14,
-                fontweight="bold"
-            )
+# 3. 設定中文字型標題
+ax.set_title(
+    f"臺中市防災韌性空間變化圖\n"
+    f"韌性變化分數 = 災後網格分數 - 災前網格分數 ｜ 模擬失能半徑： {disaster_radius} 公尺",
+    fontsize=16,
+    fontweight="bold",
+    fontproperties=font_prop,  # 帶入快取的中文字型，防止豆腐塊
+    pad=15
+)
 
-            gdf_change.plot(
-                column="最終韌性退化差值",
-                cmap=cmap_rwg,
-                norm=norm,
-                ax=ax,
-                edgecolor="none",
-                alpha=0.88,
-                legend=True,
-                legend_kwds={
-                    "label": "韌性變化分數\n(災後 - 災前)",
-                    "shrink": 0.75
-                }
-            )
+# 4. 繪製經緯度網格填色
+plot_collection = gdf_change.plot(
+    column="最終韌性退化差值",
+    cmap=cmap_rwg,
+    norm=norm,
+    ax=ax,
+    edgecolor="none",
+    alpha=0.88,
+    legend=False  # 先關閉預設圖例，下方手動客製化帶有中文字型的 Colorbar
+)
 
-            if "twd97_x" in st.session_state:
-                ax.scatter(
-                    st.session_state["twd97_x"],
-                    st.session_state["twd97_y"],
-                    s=220,
-                    c="yellow",
-                    edgecolors="black",
-                    marker="x",
-                    linewidths=3,
-                    zorder=10
-                )
+# 5. 客製化 Colorbar，使其完美支援中文
+sm = plt.cm.ScalarMappable(cmap=cmap_rwg, norm=norm)
+sm._A = []  # 避免 matplotlib 報錯的小技巧
+cbar = fig_resilience.colorbar(sm, ax=ax, shrink=0.65, pad=0.03)
+cbar.set_label(
+    "韌性變化分數\n(災後分數 - 災前分數)", 
+    fontproperties=font_prop, 
+    fontsize=12,
+    labelpad=10
+)
 
-            ax.grid(True, linestyle="--", alpha=0.15)
-            ax.set_xlabel("TWD97 X 座標 (公尺)")
-            ax.set_ylabel("TWD97 Y 座標 (公尺)")
+# 6. 【核心修正】在經緯度圖上，精準釘上黃金災害中心點
+if "last_clicked_wgs84" in st.session_state and st.session_state["last_clicked_wgs84"] is not None:
+    disaster_lat_val = st.session_state["last_clicked_wgs84"][0]
+    disaster_lon_val = st.session_state["last_clicked_wgs84"][1]
+    
+    # 繪製醒目的黃金 X 災害中心
+    ax.scatter(
+        disaster_lon_val,  # X 軸填經度 (Longitude)
+        disaster_lat_val,  # Y 軸填緯度 (Latitude)
+        s=300,             # 放大尺寸使其更清晰
+        c="#f1c40f",       # 明亮黃
+        edgecolors="#2c3e50",
+        marker="X",        # 大寫 X 記號
+        linewidths=3,
+        zorder=10,
+        label="模擬災害中心點"
+    )
+    
+    # 為點位加上中文字型圖例说明
+    leg = ax.legend(prop=font_prop, loc="upper right", frameon=True, facecolor="white", edgecolor="none")
+    leg.set_zorder(11)
 
-            plt.tight_layout()
-            st.pyplot(fig_resilience)
-            plt.close(fig_resilience)
+# 7. 將軸線標籤改為經緯度，並綁定中文字型
+ax.grid(True, linestyle="--", alpha=0.3)
+ax.set_xlabel("經度 (Longitude, WGS84)", fontproperties=font_prop, fontsize=12, labelpad=8)
+ax.set_ylabel("緯度 (Latitude, WGS84)", fontproperties=font_prop, fontsize=12, labelpad=8)
+
+# 保持橫縱軸比例 1:1，確保地圖不會因為視窗縮放而變形
+ax.set_aspect('equal', adjustable='box')
+
+# 8. 輸出至 Streamlit 網頁
+plt.tight_layout()
+st.pyplot(fig_resilience)
+plt.close(fig_resilience)
 
 # ==============================================================================
             # 📊 綜合統計表模組
