@@ -8,4 +8,5 @@ pandas
 scipy
 shapely
 pyproj
+matplotlib
 plotly
